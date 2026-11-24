@@ -1,0 +1,9 @@
+LICENSE
+THIRD_PARTY_NOTICES.txt
+recorder/DaozaiRecorder.exe
+recorder/ScreenRecorderLib.dll
+recorder/ScreenRecorderLib-LICENSE.txt
+recorder/msvcp140.dll
+recorder/concrt140.dll
+recorder/vcruntime140.dll
+recorder/vcruntime140_1.dll

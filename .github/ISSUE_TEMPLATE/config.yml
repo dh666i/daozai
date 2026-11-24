@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 使用指南
+    url: https://github.com/dh666i/daozai/blob/main/docs/USAGE.md
+    about: 查看录屏、截图、数据目录及版本更新的操作说明。
