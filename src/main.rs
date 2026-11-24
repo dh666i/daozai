@@ -471,7 +471,8 @@ impl eframe::App for Shell {
             } else {
                 self.backdrop=None;
             }
-            if self.app.settings.bluetooth_notifications {
+            let peripheral_page = self.app.module_on(daozai::app::PERIPHERALS_PAGE);
+            if self.app.settings.bluetooth_notifications || peripheral_page {
                 if self.bt_rx.is_none() {self.bt_rx=Some(daozai::bt::spawn());}
             } else {
                 self.bt_rx=None;
@@ -479,8 +480,13 @@ impl eframe::App for Shell {
                 self.bt_ready=false;
             }
             if let Some(service)=&self.bt_rx {
-                while let Ok(found)=service.rx.try_recv(){ self.bt=found; self.bt_ready=true; }
+                while let Ok(found)=service.rx.try_recv(){
+                    self.app.sync_bluetooth_power(&found);
+                    self.bt=found.devices;
+                    self.bt_ready=true;
+                }
             }
+            self.app.poll_peripherals();
             let previous_pending=self.app.pending_messengers.clone();
             for event in self.messengers.poll_taskbar(ctx,&self.app.settings){match event{
                 TaskbarEvent::Status(client,status)=>self.app.set_messenger_status(client,status),

@@ -82,6 +82,7 @@ pub(crate) fn device_icon(c: &Card, kind: crate::bt::DeviceKind, x: f32, y: f32,
     let pixels=(rect.width()*c.ui.ctx().pixels_per_point()).ceil() as u32;
     let icon=egui::Image::from_bytes(format!("{uri}/{pixels}.svg"),bytes);
     if let Ok(egui::load::TexturePoll::Ready { texture })=icon.fit_to_exact_size(rect.size()).load_for_size(c.ui.ctx(),rect.size()) {
+        crate::skin_paint::mark_monochrome(texture.id);
         c.painter.image(texture.id,rect,Rect::from_min_max(egui::Pos2::ZERO,egui::pos2(1.0,1.0)),Color32::WHITE);
     }
 }
@@ -1261,6 +1262,7 @@ fn settings_page_icon(page:usize)->egui::ImageSource<'static>{
         QUOTA_PAGE=>("quota",include_bytes!("../assets/settings-icons/system/quota.svg")),
         CALENDAR_PAGE=>("calendar",include_bytes!("../assets/settings-icons/system/calendar.svg")),
         RECORDER_PAGE=>("recorder",include_bytes!("../assets/settings-icons/system/recorder.svg")),
+        PERIPHERALS_PAGE=>("peripherals",include_bytes!("../assets/settings-icons/system/peripherals.svg")),
         _=>("weather",include_bytes!("../assets/settings-icons/system/weather.svg")),
     };
     egui::ImageSource::Bytes{uri:format!("bytes://settings-header-{name}.svg").into(),bytes:bytes.into()}
@@ -1270,7 +1272,7 @@ fn settings_page_icon(page:usize)->egui::ImageSource<'static>{
 #[cfg_attr(not(test),allow(dead_code))]
 pub(crate) fn settings_tab_module(tab:usize)->Option<usize>{
     use crate::app::*;
-    match tab {1=>Some(MUSIC_PAGE),2=>Some(FOCUS_PAGE),3=>Some(WATER_PAGE),4=>Some(TODO_PAGE),5=>Some(SHELF_PAGE),7=>Some(MAIL_PAGE),8=>Some(CALENDAR_PAGE),11=>Some(QUOTA_PAGE),12=>Some(WEATHER_PAGE),SETTINGS_TAB_RECORDER=>Some(RECORDER_PAGE),_=>None}
+    match tab {1=>Some(MUSIC_PAGE),2=>Some(FOCUS_PAGE),3=>Some(WATER_PAGE),4=>Some(TODO_PAGE),5=>Some(SHELF_PAGE),7=>Some(MAIL_PAGE),8=>Some(CALENDAR_PAGE),11=>Some(QUOTA_PAGE),12=>Some(WEATHER_PAGE),SETTINGS_TAB_RECORDER=>Some(RECORDER_PAGE),SETTINGS_TAB_PERIPHERALS=>Some(PERIPHERALS_PAGE),_=>None}
 }
 
 pub(crate) fn settings_label(ui:&mut egui::Ui,text:&str){
@@ -1398,12 +1400,13 @@ fn setting_choices(ui:&mut egui::Ui,title:&str,value:&mut u32,values:[u32;3],uni
 pub(crate) const SETTINGS_TAB_APPEARANCE: usize = 13;
 pub(crate) const SETTINGS_TAB_POSITION: usize = 14;
 pub(crate) const SETTINGS_TAB_RECORDER: usize = 15;
+pub(crate) const SETTINGS_TAB_PERIPHERALS: usize = 16;
 /// 侧栏：一项就是一页，不再有页内子标签。专注与健康（2、3）、待办与置物（4、5）各合成一页；关于固定左下角。
 /// 第四列是这一项之前的分组标题。
-const SETTINGS_GROUPS: [(&str,usize,usize,&str);14] = [
+const SETTINGS_GROUPS: [(&str,usize,usize,&str);15] = [
     ("通用",0,0,"岛仔"), ("外观",SETTINGS_TAB_APPEARANCE,SETTINGS_TAB_APPEARANCE,""), ("位置",SETTINGS_TAB_POSITION,SETTINGS_TAB_POSITION,""), ("页面管理",10,10,""),
     ("音乐",1,1,"功能"), ("专注与健康",2,3,""), ("待办与置物",4,5,""), ("消息提醒",6,6,""), ("邮箱",7,7,""), ("日程",8,8,""), ("AI 额度",11,11,""), ("天气",12,12,""),
-    ("录屏",SETTINGS_TAB_RECORDER,SETTINGS_TAB_RECORDER,""), ("关于",9,9,""),
+    ("录屏",SETTINGS_TAB_RECORDER,SETTINGS_TAB_RECORDER,""), ("外设电量",SETTINGS_TAB_PERIPHERALS,SETTINGS_TAB_PERIPHERALS,""), ("关于",9,9,""),
 ];
 /// 分页标题；合并页（3→2、5→4）显示合并后的名字。
 fn settings_tab_title(tab:usize)->&'static str{
@@ -1481,16 +1484,19 @@ impl App {
                 ui.add_space(2.0);
                 // 窗口拉到最矮时按可用高度压缩行高，「关于」始终留在底部可见。
                 // 每项占 行高 + 控件间距(3) + 行后空隙；两个分组标题和「关于」上方预留约 80。
-                let per=(ui.available_height()-80.0)/SETTINGS_GROUPS.len() as f32;
+                let sidebar_height=ui.available_height();
+                let per=(sidebar_height-80.0)/SETTINGS_GROUPS.len() as f32;
                 let row_h=(per-6.0).clamp(20.0,32.0);
                 let row_gap=(per-3.0-row_h).clamp(0.0,3.0);
+                egui::ScrollArea::vertical().id_salt("settings-sidebar-scroll").auto_shrink([false,false]).show(ui,|ui|{
+                let bottom=ui.next_widget_position().y+sidebar_height;
                 for (name,start,end,section) in SETTINGS_GROUPS {
                     if !section.is_empty() {
                         ui.add_space(if start==0{2.0}else{8.0});
                         ui.label(egui::RichText::new(section).size(11.0).color(settings_color(ctx,Color32::from_gray(150),Color32::from_gray(105))));
                         ui.add_space(3.0);
                     }
-                    if start==9 {ui.add_space((ui.available_height()-row_h-4.0).max(4.0));}
+                    if start==9 {ui.add_space((bottom-ui.next_widget_position().y-row_h-4.0).max(4.0));}
                     let selected=(start..=end).contains(&self.settings_tab);
                     let (rect,response)=ui.allocate_exact_size(egui::vec2(ui.available_width(),row_h),egui::Sense::click());
                     if response.clicked() && !selected{self.settings_tab=start;}
@@ -1507,6 +1513,7 @@ impl App {
                         6=>egui::include_image!("../assets/settings-icons/system/notifications.svg"),
                         12=>egui::include_image!("../assets/settings-icons/system/weather.svg"),
                         SETTINGS_TAB_RECORDER=>egui::include_image!("../assets/settings-icons/system/recorder.svg"),
+                        SETTINGS_TAB_PERIPHERALS=>egui::include_image!("../assets/settings-icons/system/peripherals.svg"),
                         7=>egui::include_image!("../assets/settings-icons/system/mail.svg"),
                         8=>egui::include_image!("../assets/settings-icons/system/calendar.svg"),
                         SETTINGS_TAB_APPEARANCE=>egui::include_image!("../assets/settings-icons/system/appearance.svg"),
@@ -1518,6 +1525,7 @@ impl App {
                     ui.painter().text(egui::pos2(rect.left()+40.0,rect.center().y),egui::Align2::LEFT_CENTER,name,egui::FontId::proportional(13.0),if selected{settings_color(ctx,Color32::WHITE,Color32::from_rgb(30,34,41))}else{settings_color(ctx,Color32::from_gray(225),Color32::from_gray(55))});
                     ui.add_space(row_gap);
                 }
+                });
             });
             egui::CentralPanel::default().frame(egui::Frame::new().fill(settings_color(ctx,Color32::from_rgb(25,25,27),Color32::from_rgb(246,247,249))).inner_margin(egui::Margin::symmetric(22,16))).show(ctx,|ui|{
                 settings_apply_style(ui);
@@ -1529,6 +1537,18 @@ impl App {
                     // 右侧给滚动条留出空隙，卡片和开关不会被它压住。
                     ui.set_width((ui.available_width()-12.0).max(240.0));
                     match tab {
+                    SETTINGS_TAB_PERIPHERALS=>{
+                        let on=self.settings_feature_header(ui,crate::app::PERIPHERALS_PAGE,"鼠标、键盘与耳机",|_,_|{});
+                        settings_label(ui,"提醒");
+                        ui.add_enabled_ui(on,|ui|settings_card(ui,|ui|{
+                            setting_row(ui,"低电量提醒","每次进入低电量状态时提醒一次",&mut self.settings.peripheral_low_alert);
+                        }));
+                        settings_label(ui,"设备读数");
+                        settings_card(ui,|ui|{
+                            ui.label("蓝牙设备可提供电量，部分设备也会报告充电状态。");
+                            ui.label("支持的 ROG 接收器和 USB 设备可直接读取电量。");
+                        });
+                    }
                     SETTINGS_TAB_RECORDER=>{
                         let on=self.settings_feature_header(ui,crate::app::RECORDER_PAGE,"主显示器 · MP4",|_,_|{});
                         let recording=self.recording_active();
@@ -1580,7 +1600,7 @@ impl App {
                         });
                         settings_label(ui,"功能页面");
                         settings_card(ui,|ui|{
-                            let descriptions: [&str; crate::app::PAGE_COUNT]=["播放控制与同步歌词","番茄钟与休息计时","喝水与久坐提醒","临时收纳文件位置","任务清单与到期提醒","邮件摘要与验证码","Agent 剩余额度和账号切换","月历、邮件邀请与工作日程","当地天气与七日预报","主屏录制、声音来源与视频文件"];
+                            let descriptions: [&str; crate::app::PAGE_COUNT]=["播放控制与同步歌词","番茄钟与休息计时","喝水与久坐提醒","临时收纳文件位置","任务清单与到期提醒","邮件摘要与验证码","Agent 剩余额度和账号切换","月历、邮件邀请与工作日程","当地天气与七日预报","主屏录制、声音来源与视频文件","外设电量、充电状态与低电量提醒"];
                             ui.label(egui::RichText::new("拖动左侧手柄调整顺序；关闭的功能不在后台运行，不同步也不提醒，已有数据保留。").size(11.5).color(settings_color(ctx,Color32::from_gray(180),Color32::from_gray(75))));
                             #[derive(Clone)]
                             struct PageDrag(usize);
@@ -1878,7 +1898,7 @@ impl App {
                         settings_card(ui,|ui|{
                             setting_row(ui,"系统状态","音量、充电、网络和键盘状态",&mut self.settings.system_hud);
                             ui.separator();
-                            setting_row(ui,"蓝牙设备","连接与断开时提醒；关闭后停止蓝牙监听",&mut self.settings.bluetooth_notifications);
+                            setting_row(ui,"蓝牙设备","蓝牙设备连接或断开时提醒",&mut self.settings.bluetooth_notifications);
                         });
                         // 聊天软件：一个软件一行、一个开关；附属选项缩进跟在所属软件下面。
                         let master=self.settings.notifications;

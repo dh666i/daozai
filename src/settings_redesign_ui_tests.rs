@@ -18,6 +18,25 @@ fn recorder_audio_preferences_persist_through_the_island_controls() {
     assert_eq!(h.app.settings_tab, crate::extras::SETTINGS_TAB_RECORDER);
 }
 
+#[test]
+fn peripheral_preferences_upgrade_and_roundtrip(){
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let _h=H::new();
+    let dir=crate::model::config_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("settings.txt"),"visible_pages=1011111110\npage_order=9,8,7,6,5,4,3,2,1,0\nbluetooth_notifications=0\n").unwrap();
+    let mut settings=crate::model::Settings::load();
+    assert!(settings.peripheral_pin.is_empty() && settings.peripheral_low_alert);
+    assert_eq!(settings.page_order,[9,8,7,6,5,4,3,2,1,0,10]);
+    assert!(settings.visible_pages[crate::app::PERIPHERALS_PAGE]);
+    assert!(!settings.visible_pages[crate::app::RECORDER_PAGE] && !settings.bluetooth_notifications);
+    settings.peripheral_pin="rog:1ace:07:test".into();
+    settings.peripheral_low_alert=false;
+    settings.save();
+    let saved=crate::model::Settings::load();
+    assert_eq!(saved.peripheral_pin,settings.peripheral_pin);
+    assert!(!saved.peripheral_low_alert);
+}
+
 /// 旧版「新邮件提醒」关着的用户：升级后邮箱模块关闭，内部开关恢复为开，不会突然开始收信。
 #[test]
 fn merged_mail_switch_migrates_old_off_to_module_off(){
@@ -76,6 +95,7 @@ fn settings_old_tab_numbers_open_merged_pages(){
     assert_eq!(group(0),"通用");assert_eq!(group(13),"外观");assert_eq!(group(14),"位置");
     assert_eq!(group(10),"页面管理");assert_eq!(group(9),"关于");
     assert_eq!(group(crate::app::PAGE_SETTINGS_TABS[crate::app::RECORDER_PAGE]),"录屏");
+    assert_eq!(group(crate::app::PAGE_SETTINGS_TABS[crate::app::PERIPHERALS_PAGE]),"外设电量");
 }
 
 /// 每个分页都能正常绘制（含功能关闭时的提示），不会因为挪动布局而崩溃。
@@ -85,7 +105,7 @@ fn settings_every_tab_renders_with_modules_on_and_off(){
     for on in [true,false] {
         let mut h=H::new();h.app.open_settings();h.ctx.set_embed_viewports(true);
         if !on {for page in 0..crate::app::PAGE_COUNT {if page!=crate::app::MUSIC_PAGE {h.app.settings.visible_pages[page]=false;}}}
-        for tab in 0..=crate::extras::SETTINGS_TAB_RECORDER {
+        for tab in 0..=crate::extras::SETTINGS_TAB_PERIPHERALS {
             h.app.settings_tab=tab;
             for _ in 0..2 {let _=h.ctx.run(egui::RawInput::default(),|ctx|h.app.settings_ui(ctx,false));}
             assert_eq!(h.app.settings_tab,tab,"绘制分页 {tab} 不应自行跳转");
@@ -107,7 +127,7 @@ fn settings_sidebar_keeps_about_visible_at_minimum_height(){
     });
     for _ in 0..3 {let _=h.ctx.run(Default::default(),|ctx|h.app.settings_ui(ctx,false));}
     let frame=output.lock().unwrap().take().unwrap();
-    for label in ["通用","天气","录屏","关于"] {
+    for label in ["通用","天气","录屏","外设电量","关于"] {
         let rect=frame.shapes.iter().find_map(|s|match &s.shape{egui::Shape::Text(t) if t.galley.text()==label && t.pos.x<180.0=>Some(t.visual_bounding_rect()),_=>None})
             .unwrap_or_else(||panic!("侧栏缺少 {label}"));
         assert!(rect.bottom()<=450.0,"{label} 超出窗口底部：{rect:?}");

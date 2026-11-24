@@ -35,7 +35,8 @@ pub const QUOTA_PAGE: usize = 6;
 pub const CALENDAR_PAGE: usize = 7;
 pub const WEATHER_PAGE: usize = 8;
 pub const RECORDER_PAGE: usize = 9;
-pub const PAGE_COUNT: usize = RECORDER_PAGE + 1;
+pub const PERIPHERALS_PAGE: usize = 10;
+pub const PAGE_COUNT: usize = PERIPHERALS_PAGE + 1;
 pub(crate) const WEATHER_H: f32 = 232.0;
 pub(crate) const CALENDAR_H: f32 = 216.0;
 pub const BAR_W: f32 = 163.0; // 收起药丸宽
@@ -80,8 +81,8 @@ fn pill_shadow(painter:&egui::Painter,rect:Rect,radius:f32,strength:f32){
         painter.rect_filled(r,radius+grow*0.8,Color32::from_black_alpha((255.0*a*strength) as u8));
     }
 }
-pub(crate) const PAGE_NAMES: [&str; PAGE_COUNT] = ["音乐", "专注", "健康", "置物架", "待办", "邮箱", "AI 额度", "日程", "天气", "录屏"];
-pub(crate) const PAGE_SETTINGS_TABS: [usize; PAGE_COUNT] = [1,2,3,5,4,7,11,8,12,crate::extras::SETTINGS_TAB_RECORDER];
+pub(crate) const PAGE_NAMES: [&str; PAGE_COUNT] = ["音乐", "专注", "健康", "置物架", "待办", "邮箱", "AI 额度", "日程", "天气", "录屏", "外设电量"];
+pub(crate) const PAGE_SETTINGS_TABS: [usize; PAGE_COUNT] = [1,2,3,5,4,7,11,8,12,crate::extras::SETTINGS_TAB_RECORDER,crate::extras::SETTINGS_TAB_PERIPHERALS];
 
 // ---------- 动效参数 ----------
 /// 悬停意图缓冲：光标停留这么久才真正展开（期间药丸轻微胀大作为反馈），防误触。
@@ -769,6 +770,7 @@ pub struct App {
     /// 置物架页的两个分栏：0 = 文件，1 = 剪贴板。
     pub(crate) shelf_tab: usize,
     pub(crate) screen_tools: crate::screen_tools::ScreenTools,
+    pub(crate) peripherals: crate::peripherals::Panel,
     pub clipboard: crate::clipboard::Shared,
     pub(crate) clip_first: usize,
     pub(crate) clip_confirm_clear: Option<f64>,
@@ -964,6 +966,7 @@ impl App {
             confirm_clear: None,
             shelf_tab: 0,
             screen_tools: Default::default(),
+            peripherals: Default::default(),
             clipboard: crate::clipboard::Shared::new(clipboard_on),
             clip_first: 0,
             clip_confirm_clear: None,
@@ -1895,6 +1898,7 @@ impl App {
         if self.settings.clock_seconds { layout.widen_clock(24.0); }
         if let Some(extra)=self.weather_pill_extra(&ctx){ layout.widen(bar::WEATHER,extra); }
         if !self.settings.show_clock {layout.hide_clock();}
+        if self.pinned_peripheral().is_some() { layout.append_peripheral(); }
         if self.pet_enabled() {
             if let Some(a)=self.notice.as_ref().filter(|_|!self.compact_notices()&&!self.open){layout.x[bar::PET]=Some(22.0-(self.notice_size(a).0+self.pet_space())/2.0);}
             else if self.island_lyrics_active() {layout.x[bar::PET]=Some(60.0-self.lyric_bar_width()/2.0);}
@@ -2269,8 +2273,9 @@ impl App {
         let ambient=self.settings.skin==model::Skin::Fluid && self.fluid.animating() || self.pomo.running && (self.open && self.page==1 || !self.open && !minimal_pill && self.notice.is_none() && bar::animations_enabled())
             || self.media.playing && (self.open && self.page==0 || !self.open && !minimal_pill && self.notice.is_none() && self.media.is_music())
             || self.notice.as_ref().is_some_and(|notice|notice.meeting.is_some());
-        let animating=transitioning || ambient || pet_visible && self.pet.state!=PetState::Sleeping;
-        let repaint_after=std::time::Duration::from_secs_f64(if transitioning || pet_visible && self.pet.state!=PetState::Sleeping {
+        let power_motion = !self.fullscreen_hidden && crate::peripherals::ui::needs_frame(&ctx);
+        let animating=transitioning || ambient || power_motion || pet_visible && self.pet.state!=PetState::Sleeping;
+        let repaint_after=std::time::Duration::from_secs_f64(if transitioning || power_motion || pet_visible && self.pet.state!=PetState::Sleeping {
             1.0/60.0
         } else if ambient {1.0/30.0} else if pet_visible {0.1} else {1.0});
         cmds.append(&mut self.pending);
@@ -2301,7 +2306,7 @@ impl App {
             expanded: self.open,
             editing: self.is_editing(),
             animating,
-            interactive_transition,
+            interactive_transition: interactive_transition || power_motion,
             repaint_after,
             cmds,
         }
@@ -2950,6 +2955,15 @@ impl App {
         let pcx=layout.x[bar::CLOCK].map_or(hc,|x|local_cx+x-paint::clock_width(base,&clock,size::PILL_CLOCK)/2.0);
 
         if self.effective_minimal() && self.t>=self.notification_bell_until && p < 0.02 { return; }
+        if !self.side() && p < 0.35 {
+            if let (Some(x), Some(device)) = (layout.x[bar::PERIPHERAL], self.pinned_peripheral()) {
+                let badge = base.faded(1.0-smoothstep(0.0,0.35,p));
+                crate::peripherals::ui::draw_compact(&badge, local_cx+x, 15.0, device);
+                if badge.hit(local_cx+x-crate::peripherals::ui::COMPACT_WIDTH/2.0, 1.0, crate::peripherals::ui::COMPACT_WIDTH, 28.0, "open-peripheral-badge").clicked() {
+                    self.show_page(PERIPHERALS_PAGE);
+                }
+            }
+        }
         // 电池：位置/大小连续插值
         let bk = lerp(1.0, 0.8, m);
         let bpos = (lerp(pb.0, hb.0, m), lerp(pb.1, hb.1, m));
@@ -3140,6 +3154,7 @@ impl App {
             8 if self.weather.solar_open => ("日出", "日落", theme::YELLOW),
             8 => ("当地", "天气", theme::CYAN),
             RECORDER_PAGE => ("屏幕", "录制", theme::RED_TOP),
+            PERIPHERALS_PAGE => ("外设", "电量", theme::GREEN),
             _ => ("岛仔", "设置", theme::WHITE),
         };
         let wa = c.text(15.0, base, a, size::TITLE, W::Bold, theme::WHITE, H::Left);
@@ -3199,6 +3214,11 @@ impl App {
             6 => self.page_quota(c),
             8 => self.page_weather(c,env,cmds),
             RECORDER_PAGE => self.screen_tools.draw_recorder(c, cmds, &mut self.settings),
+            PERIPHERALS_PAGE => {
+                if self.peripherals.draw(c, &mut self.settings.peripheral_pin) {
+                    self.settings.save();
+                }
+            }
             CALENDAR_PAGE => self.page_calendar(c,env),
             _ => self.page_settings(c),
         }

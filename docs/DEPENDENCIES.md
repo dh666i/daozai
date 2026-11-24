@@ -8,6 +8,12 @@
 - **录屏运行库**中的 Microsoft Visual C++ DLL 来自 Visual Studio Build Tools 的 x64 可再发行文件，保留微软的版权及再分发条款。[Microsoft 分发说明](https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files)
 - **截图工具**调用 Windows OCR 和本机 [rqrr](https://crates.io/crates/rqrr/0.10.1) 二维码解码器。rqrr 的 Rust 实现采用 MIT 或 Apache-2.0，源自 quirc 的部分采用 ISC。对应版权及许可随发布包提供。
 
+## 外设电量
+
+- 岛仔通过 hidapi-rs 访问 Windows HID 设备，随程序分发的 Windows 后端使用 HIDAPI 的 BSD 三条款许可。[hidapi-rs](https://github.com/ruabmbua/hidapi-rs) · [HIDAPI](https://github.com/libusb/hidapi)
+- ROG Omni 接收器以及 Keris II Origin、Falchion RX Low Profile 的 USB 电量解析使用 Squire Gear 公开记录的报文字段和测试数据。测试数据采用 MIT 许可。[Squire Gear 电量报文](https://github.com/phifogg/squire-gear/blob/main/protocol.json)
+- 安装 Armoury Crate 的电脑上，岛仔使用 roxmltree 解析本地设备目录，将具名型号与接收器序列号对应。电量、充电标志和低电量阈值由 HID 设备直接返回。[roxmltree](https://github.com/RazrFalcon/roxmltree)
+
 ## 本地补丁
 
 - `vendor/eframe`：基于 0.31.1，处理 Windows WGL 上下文复用、岛体缩放和窗口焦点。

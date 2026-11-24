@@ -13,9 +13,10 @@ pub(crate) const MUSIC: usize = 6;
 pub(crate) const FOCUS: usize = 7;
 pub(crate) const BELL: usize = 8;
 pub(crate) const PET: usize = 9;
+pub(crate) const PERIPHERAL: usize = 10;
 /// 天气徽标的基础槽宽；温度文字更长时由 `widen` 补足。
 pub(crate) const WEATHER_WIDTH: f32 = 38.0;
-const WIDTHS: [f32; 10] = [44.0,20.0,27.0,27.0,27.0,WEATHER_WIDTH,14.0,crate::focus_bar::WIDTH,20.0,32.0];
+const WIDTHS: [f32; 11] = [44.0,20.0,27.0,27.0,27.0,WEATHER_WIDTH,14.0,crate::focus_bar::WIDTH,20.0,32.0,crate::peripherals::ui::COMPACT_WIDTH];
 
 pub(crate) const DEFAULT_ORDER: [usize;7]=[BATTERY,PET,CLOCK,WEATHER,QUOTA,MUSIC,FOCUS];
 pub(crate) fn valid_order(order:&[usize])->bool {
@@ -82,6 +83,12 @@ impl Layout {
         self.widths[slot]+=extra;self.width+=extra;
     }
     pub fn balance_tail(&mut self,position:usize,extra:f32){self.widen(quota_slot(position),extra);}
+    pub fn append_peripheral(&mut self) {
+        let added = self.widths[PERIPHERAL] + 12.0;
+        for x in self.x.iter_mut().flatten() { *x -= added / 2.0; }
+        self.width += added;
+        self.x[PERIPHERAL] = Some(self.width / 2.0 - 16.0 - self.widths[PERIPHERAL] / 2.0);
+    }
     pub fn widen_clock(&mut self, extra:f32) {self.widen(CLOCK,extra);}
     pub fn hide_clock(&mut self) {
         let Some(center)=self.x[CLOCK].take() else{return;};
