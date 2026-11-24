@@ -3907,6 +3907,19 @@ fn music_mascot_puts_away_the_microphone_during_notices_and_their_fade_out(){
     assert_eq!(h.app.pet_state(),PetState::Satisfied,"已有的喝水反馈应保留优先级");
 }
 
+// The pair of eye silhouettes is painted together; identify it independently of its position
+// in the resident bar (notices and the user's layout can move it).
+fn mascot_expression_eyes(h: &H) -> Option<(Rect, egui::Color32)> {
+    h.shapes.iter().find_map(|s| {
+        let egui::Shape::Vec(pair) = &s.shape else { return None };
+        let [egui::Shape::Mesh(left), egui::Shape::Mesh(right)] = pair.as_slice() else { return None };
+        let (l, r) = (left.calc_bounds(), right.calc_bounds());
+        if !(7.0..14.0).contains(&(r.center().x-l.center().x)) || l.width() > 10.0 || r.width() > 10.0 { return None; }
+        let color = left.vertices.iter().max_by_key(|v| v.color.a())?.color;
+        (color.a() > 0).then_some((l.union(r), color))
+    })
+}
+
 #[test]
 fn music_mascot_plays_new_expressions_and_resumes_after_interruptions(){
     use crate::extras::PetState;
@@ -3915,8 +3928,7 @@ fn music_mascot_plays_new_expressions_and_resumes_after_interruptions(){
     for _ in 0..1080 {h.frame(vec![]);}
     let expression=h.app.pet.expressions.current().expect("听歌状态也应显示新表情");
     assert_eq!(h.app.pet_state(),PetState::Music);
-    let atlas=h.ctx.tex_manager().read().allocated().find_map(|(id,meta)|(meta.name=="daozai-expressions").then_some(*id)).unwrap();
-    assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Mesh(mesh)if mesh.texture_id==atlas)));
+    assert!(mascot_expression_eyes(&h).is_some());
     h.app.alert("系统音量","音量 60%",5,false);h.frame(vec![]);
     assert_eq!(h.app.pet_state(),PetState::Awake);assert!(h.app.pet.expressions.current().is_none());
     for _ in 0..300 {h.frame(vec![]);if h.app.pet_state()==PetState::Music {break;}}
@@ -4002,8 +4014,7 @@ fn mascot_feedback_plays_beside_notice_and_respects_switches(){
     h.app.drink_water();h.app.alert("待办到时间了","测试提醒",4,false);
     for _ in 0..60 {h.frame(vec![]);}assert_eq!(h.app.pet_state(),PetState::Satisfied);
     assert!(h.app.notice.is_some());
-    let atlas=h.ctx.tex_manager().read().allocated().find_map(|(id,meta)|(meta.name=="daozai-expressions").then_some(*id)).expect("表情图集已加载");
-    assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Mesh(mesh) if mesh.texture_id==atlas)),"通知期间岛仔仍应可见");
+    assert!(mascot_expression_eyes(&h).is_some(),"通知期间岛仔仍应可见");
     for _ in 0..240 {h.frame(vec![]);}assert_eq!(h.app.pet_state(),PetState::Awake);
     h.app.notice=None;for _ in 0..240 {h.frame(vec![]);}assert_eq!(h.app.pet_state(),PetState::Awake);
     h.app.drink_water();h.app.settings.minimal=true;h.frame(vec![]);assert!(h.app.pet.reaction.is_none());
@@ -4050,7 +4061,7 @@ fn mascot_expression_gallery(){
 }
 
 #[test]
-fn mascot_atlas_respects_visibility_and_skin_switches(){
+fn mascot_expressions_respect_visibility_and_skin_switches(){
     use crate::pet_expressions::Expression;
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
     h.app.settings.pet=true;h.app.settings.minimal=false;
@@ -4060,14 +4071,10 @@ fn mascot_atlas_respects_visibility_and_skin_switches(){
         for expression in Expression::ALL {
             h.app.pet.expressions.play(expression);for _ in 0..30 {h.frame(vec![]);}
             assert_eq!(h.app.pet.expressions.current(),Some(expression));
-            let atlas=h.ctx.tex_manager().read().allocated().find_map(|(id,meta)|(meta.name=="daozai-expressions").then_some(*id)).unwrap();
-            let drawn=h.shapes.iter().find_map(|shape|match &shape.shape {
-                egui::Shape::Mesh(mesh) if mesh.texture_id==atlas=>Some(mesh),_=>None,
-            }).expect("新表情应画在常驻岛上");
-            assert!(h.region.contains_rect(drawn.calc_bounds()),"新表情不能撑出岛体");
-            // 每个表情单独一张序列图：横向铺满整张，纹理只有一列大小。
-            assert!(drawn.vertices[0].uv.x.abs()<0.001);
-            assert_eq!(h.ctx.tex_manager().read().meta(atlas).unwrap().size,[144,1440],"只保留正在播放的表情");
+            let (bounds, color) = mascot_expression_eyes(&h).expect("新表情应画在常驻岛上");
+            assert!(h.region.contains_rect(bounds),"新表情不能撑出岛体");
+            let expected = h.app.skin_palette().map_or(egui::Color32::WHITE, |p| crate::skin_paint::map_color(egui::Color32::WHITE, &p));
+            assert_eq!(color, expected, "{skin:?} 上 {expression:?} 应使用皮肤的眼睛颜色");
         }
     }
     h.app.settings.pet=false;h.frame(vec![]);assert!(h.app.pet.expressions.current().is_none());

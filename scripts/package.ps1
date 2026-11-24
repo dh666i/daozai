@@ -1,4 +1,4 @@
-﻿param([switch]$SkipBuild, [string]$Executable, [string]$NsisCompiler, [string]$OutputDirectory, [switch]$LocalBuild)
+﻿param([switch]$SkipBuild, [string]$Executable, [string]$NsisCompiler, [string]$OutputDirectory)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
 Push-Location $projectRoot
@@ -30,13 +30,11 @@ try {
     $binary = Get-Item -LiteralPath $Executable
     & (Join-Path $PSScriptRoot 'check-runtime.ps1') -Executable $binary.FullName
     if ($binary.VersionInfo.FileVersion -ne $version -and $binary.VersionInfo.FileVersion -ne "$version.0") { throw 'Executable version mismatch' }
-    if (-not $LocalBuild) {
-        $bytes = [IO.File]::ReadAllBytes($binary.FullName)
-        foreach ($encoding in @([Text.Encoding]::UTF8, [Text.Encoding]::Unicode)) {
-            $content = $encoding.GetString($bytes).Replace('/', '\')
-            foreach ($private in $privatePaths) {
-                if ($content.IndexOf($private.Replace('/', '\'), [StringComparison]::OrdinalIgnoreCase) -ge 0) { throw "发布程序包含本机构建路径（$($encoding.WebName)）" }
-            }
+    $bytes = [IO.File]::ReadAllBytes($binary.FullName)
+    foreach ($encoding in @([Text.Encoding]::UTF8, [Text.Encoding]::Unicode)) {
+        $content = $encoding.GetString($bytes).Replace('/', '\')
+        foreach ($private in $privatePaths) {
+            if ($content.IndexOf($private.Replace('/', '\'), [StringComparison]::OrdinalIgnoreCase) -ge 0) { throw "发布程序包含本机构建路径（$($encoding.WebName)）" }
         }
     }
     if (-not $NsisCompiler) {
@@ -46,10 +44,9 @@ try {
         else { $NsisCompiler = Join-Path ${env:ProgramFiles(x86)} 'NSIS\makensis.exe' }
     }
     if (-not (Test-Path -LiteralPath $NsisCompiler)) { throw 'NSIS compiler not found; install NSIS or pass -NsisCompiler' }
-    $prefix = if ($LocalBuild) { 'Daozai-Local' } else { 'Daozai' }
-    $packageName = "$prefix-v$version-windows-x64"
+    $packageName = "Daozai-v$version-windows-x64"
     if (-not $OutputDirectory) {
-        $OutputDirectory = if ($LocalBuild) { Join-Path $targetDirectory 'local-package' } else { Join-Path $projectRoot 'dist' }
+        $OutputDirectory = Join-Path $projectRoot 'dist'
     }
     $outputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
     $stagingDirectory = Join-Path $outputDirectory $packageName
@@ -68,7 +65,7 @@ try {
     # 免安装包没有开始菜单：附带一个只调用 daozai.exe --collect-diagnostics 的 cmd，岛仔打不开时双击收集。
     # 诊断脚本本身内嵌在程序里，不再单独附带，也就不会出现新程序配旧脚本。
     Copy-Item -LiteralPath (Join-Path $projectRoot 'installer\收集岛仔诊断.cmd') -Destination $stagingDirectory
-    $setup = Join-Path $outputDirectory "$prefix-Setup-v$version-x64.exe"
+    $setup = Join-Path $outputDirectory "Daozai-Setup-v$version-x64.exe"
     # 同一份编译期文件清单控制安装和卸载，保留用户放进 recorder 目录的其他文件。
     $manifest = [IO.Path]::GetTempFileName()
     try {

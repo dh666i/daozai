@@ -1,4 +1,4 @@
-//! 岛仔的原生状态、矢量表情与表情图集播放。
+//! 岛仔的原生状态、动作和连续矢量表情。
 use crate::anim::{approach, lerp, smoothstep};
 use crate::paint::{Card, H};
 use crate::theme::{self, W};
@@ -22,6 +22,69 @@ pub(crate) enum PetState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_gestures_change_rendered_eyes_between_refreshes() {
+        use eframe::egui::{self, Pos2, Rect, Vec2};
+        let ctx = egui::Context::default();
+        crate::theme::load_fonts(&ctx);
+        let mut raster = crate::preview_raster::Raster::new(48, 32);
+        for (state, start) in [(PetState::Awake, 3.1), (PetState::Waking, 0.65),
+            (PetState::Focused, 4.08), (PetState::Dozing, 1.8)] {
+            let mut pet = Pet { state, age: start, ..Pet::default() };
+            pet.follow_pose(0.0, 2.0, [0.0; 2], true);
+            let mut previous = Vec::new();
+            let mut changed = 0;
+            for _ in 0..24 {
+                pet.age += 1.0 / 60.0;
+                pet.follow_pose(0.0, 1.0 / 60.0, [0.0; 2], true);
+                let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(48.0, 32.0))), ..Default::default() };
+                let output = ctx.run(input, |ctx| {
+                    egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
+                        pet.draw(&Card::new(ui, Pos2::ZERO, ui.max_rect()), 24.0, 0.0, None);
+                    });
+                });
+                raster.update_textures(&output.textures_delta);
+                raster.buf.fill([0.0; 4]);
+                raster.draw(&ctx.tessellate(output.shapes, 1.0), 1.0);
+                let eyes: Vec<_> = raster.buf.chunks_exact(48).skip(6).take(18)
+                    .flat_map(|row| row[11..36].iter().map(|p| (p[0] * 255.0).round() as u8))
+                    .collect();
+                if !previous.is_empty() && eyes != previous { changed += 1; }
+                previous = eyes;
+                raster.free_textures(&output.textures_delta);
+            }
+            assert!(changed >= 21, "{state:?}: only {changed} of 23 frame pairs changed");
+        }
+    }
+
+    #[test]
+    fn native_gestures_respect_reduced_motion_visibility_and_gaze() {
+        for state in [PetState::Awake, PetState::Waking, PetState::Focused, PetState::Dozing] {
+            let mut pet = Pet { state, ..Pet::default() };
+            let pose = |p: &Pet| [p.y, p.eyes[0].height, p.eyes[1].height, p.eyes[0].spread, p.eyes[0].y, p.eyes[1].y];
+            pet.follow_pose(0.0, 5.0, [0.0; 2], false);
+            let still = pose(&pet);
+            for n in 0..120 {
+                pet.age = n as f32 * 0.15;
+                pet.follow_pose(pet.age as f64, 1.0, [0.0; 2], false);
+                assert!(pose(&pet).iter().zip(still).all(|(a, b)| (a - b).abs() < 0.0001),
+                    "{state:?} should be still with motion off");
+            }
+            let age = pet.age;
+            let before_hide = pose(&pet);
+            pet.step(state, 100.0, 60.0, [2.0, 1.0], false);
+            assert_eq!((pet.age, pose(&pet), pet.gaze), (age, before_hide, [0.0; 2]));
+        }
+        let mut pet = Pet::default();
+        for (age, gaze) in [(3.8, [-2.0, 1.0]), (15.8, [2.0, -1.0])] {
+            pet.age = age;
+            pet.follow_pose(0.0, 5.0, gaze, true);
+            assert_eq!(pet.gaze, gaze);
+            assert!(pet.eyes[0].y * pet.eyes[1].y < -1.0);
+        }
+    }
+
     #[test]
     fn open_eyes_do_not_narrow_between_the_caps() {
         use eframe::egui::{self, Pos2, Rect, Vec2};
@@ -198,6 +261,10 @@ fn microphone_pose(age:f32)->([f32;2],f32) {
     ([5.9+(age*0.95).sin()*0.2,20.8+(age*1.35).sin()*0.45],35.0_f32.to_radians()+(age*1.1).sin()*0.07)
 }
 
+fn gesture(age: f32, start: f32, peak: f32, end: f32) -> f32 {
+    smoothstep(start, peak, age) * (1.0 - smoothstep(peak, end, age))
+}
+
 fn microphone(c:&Card,cx:f32,y:f32,age:f32){
     let age=if crate::bar_layout::animations_enabled(){age}else{0.0};
     let (head,angle)=microphone_pose(age);
@@ -300,25 +367,41 @@ impl Pet {
         if self.state==PetState::Music && matches!(state,PetState::Awake|PetState::Curious) {self.expressions.clear();}
         self.expressions.step(state,dt,visible);
         if state != self.state { self.state = state; self.age = 0.0; }
-        if visible { self.age += dt; }
-        if state==PetState::Music && visible {
+        if !visible { return; }
+        self.age += dt;
+        if state==PetState::Music {
             self.music_age+=dt;
             if let Some((expression,time))=music_segment_at(self.music_age).expression {self.expressions.play_at(expression,time);}
         }
+        self.follow_pose(t, dt, gaze, crate::bar_layout::animations_enabled());
+    }
+
+    fn follow_pose(&mut self, t: f64, dt: f32, gaze: [f32; 2], motion: bool) {
+        let state = self.state;
         let age = self.age;
         let mut eyes = [Eye::open(4.4); 2];
-        let mut y = (t as f32 * 1.7).sin() * 0.35;
+        let mut y = if motion { (age * 1.7).sin() * 0.35 } else { 0.0 };
         let mut look = gaze;
         match state {
+            PetState::Awake if motion => {
+                let phase = age % 24.0;
+                let lean = gesture(phase, 3.0, 3.8, 5.1) - gesture(phase, 15.0, 15.8, 17.1);
+                eyes[0].y = lean * 1.25;
+                eyes[1].y = -eyes[0].y;
+                for eye in &mut eyes { eye.spread = lean * 0.4; }
+            },
             PetState::Awake => {},
             PetState::Curious => {
                 eyes[0].height = 5.6; eyes[1].height = 6.3;
                 eyes[0].y = 0.6; eyes[1].y = -0.6;
             },
             PetState::Waking => {
-                eyes[0].height = lerp(0.0, 4.4, smoothstep(0.1, 0.65, age));
-                eyes[1].height = lerp(0.0, 4.4, smoothstep(0.4, 1.1, age));
-                y = 1.0 - smoothstep(0.0, 1.2, age); look = [0.0; 2];
+                let wake = if motion { age } else { 2.2 };
+                let stretch = gesture(wake, 0.55, 1.18, 1.95);
+                eyes[0].height = lerp(0.0, 4.4, smoothstep(0.1, 0.65, wake)) + stretch * 1.8;
+                eyes[1].height = lerp(0.0, 4.4, smoothstep(0.4, 1.1, wake)) + stretch * 1.8;
+                y = 1.0 - smoothstep(0.0, 1.2, wake) - stretch * 1.5;
+                look = [0.0; 2];
             },
             PetState::Happy => {
                 eyes = [Eye::arc(2.6, -1.8); 2];
@@ -345,12 +428,29 @@ impl Pet {
                 eyes[0] = Eye { spread: -0.6, tilt: -0.7, y: 0.4, ..Eye::open(2.8) };
                 eyes[1] = Eye { spread: 0.6, tilt: 0.7, y: 1.0, ..Eye::open(1.8) };
             },
-            PetState::Focused => { eyes = [Eye::open(1.8); 2]; look = [gaze[0] * 0.2, 0.0]; y = 0.0; },
-            PetState::Dozing => { eyes = [Eye::open(0.6); 2]; y = 1.0; look = [0.0; 2]; },
-            PetState::Sleeping => { eyes = [Eye::arc(2.4, 1.0); 2]; y = 0.8 + (t as f32 * 1.2).sin() * 0.4; look = [0.0; 2]; },
+            PetState::Focused => {
+                let phase = age % 17.0;
+                let nod = if motion { gesture(phase, 4.0, 4.55, 5.5) } else { 0.0 };
+                eyes = [Eye::open(1.8 - nod * 0.9); 2];
+                look = [gaze[0] * 0.2, 0.0];
+                y = nod * 1.7;
+            },
+            PetState::Dozing => {
+                let phase = age % 9.5;
+                let droop = if motion { gesture(phase, 1.0, 3.1, 3.9) } else { 0.0 };
+                eyes = [Eye::open(0.6 * (1.0 - droop)); 2];
+                eyes[1].y = droop * 0.8;
+                y = 1.0 + droop * 1.4;
+                look = [0.0; 2];
+            },
+            PetState::Sleeping => {
+                eyes = [Eye::arc(2.4, 1.0); 2];
+                y = 0.8 + if motion { (age * 1.2).sin() * 0.4 } else { 0.0 };
+                look = [0.0; 2];
+            },
         }
         if self.expressions.current().is_some() {eyes=[Eye::open(4.4);2];look=[0.0;2];y=0.0;}
-        if self.expressions.current().is_none() && matches!(state, PetState::Awake | PetState::Curious | PetState::Focused | PetState::Worried) {
+        if motion && self.expressions.current().is_none() && matches!(state, PetState::Awake | PetState::Curious | PetState::Focused | PetState::Worried) {
             let start = 2.0 + crate::anim::hash01((t / 5.6).floor() as u64) * 2.7;
             let blink = ((t % 5.6) as f32 - start) / 0.18;
             if (0.0..1.0).contains(&blink) {
@@ -363,8 +463,8 @@ impl Pet {
         self.y = approach(self.y, y, 14.0, dt);
     }
 
-    pub fn draw(&mut self, c: &Card, cx: f32, t: f64, palette:Option<crate::skin_paint::Palette>) {
-        if self.expressions.draw(c,cx,palette) {return;}
+    pub fn draw(&mut self, c: &Card, cx: f32, _t: f64, _palette:Option<crate::skin_paint::Palette>) {
+        if self.expressions.draw(c,cx) {return;}
         for (i, eye) in self.eyes.iter().enumerate() {
             let x = cx + if i == 0 { -5.6 } else { 5.6 } + self.gaze[0];
             let y = 14.5 + self.y + eye.y + self.gaze[1];
@@ -383,7 +483,7 @@ impl Pet {
         }
         match self.state {
             PetState::Dozing | PetState::Sleeping => {
-                let bob = ((t as f32 * 1.4).sin() + 1.0) * 0.7;
+                let bob = if crate::bar_layout::animations_enabled() { ((self.age * 1.4).sin() + 1.0) * 0.7 } else { 0.7 };
                 c.text(cx+14.0, 13.0-bob, "z", 7.0, W::Bold, Color32::from_rgb(170,160,255), H::Left);
                 if self.state == PetState::Sleeping { c.text(cx+19.0, 9.0-bob, "z", 5.5, W::Bold, Color32::from_rgb(170,160,255), H::Left); }
             },
