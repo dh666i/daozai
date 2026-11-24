@@ -28,7 +28,7 @@ pub(crate) enum SideItem {
 
 impl SideItem {
     fn height(self, clock_seconds: bool) -> f32 {
-        match self { Self::Clock => if clock_seconds {46.0}else{32.0}, Self::Weather => 40.0, Self::Battery => 20.0, Self::Peripheral => 32.0, Self::Music => 18.0, Self::Focus => 22.0, Self::Bell => 22.0, Self::Quota(_, h) => h }
+        match self { Self::Clock => if clock_seconds {46.0}else{32.0}, Self::Weather => 40.0, Self::Battery => 20.0, Self::Peripheral => 28.0, Self::Music => 18.0, Self::Focus => 22.0, Self::Bell => 22.0, Self::Quota(_, h) => h }
     }
 }
 
@@ -135,14 +135,7 @@ impl App {
                 }
                 SideItem::Weather => self.draw_side_weather(c,cx,mid),
                 SideItem::Battery => paint::battery(c, cx, mid, env.battery, env.charging, 0.72),
-                SideItem::Peripheral => {
-                    if let Some(device) = self.pinned_peripheral() {
-                        crate::peripherals::ui::draw_side(c, cx, mid, device);
-                        if c.hit(cx-15.0, mid-16.0, 30.0, 32.0, "open-side-peripheral-badge").clicked() {
-                            self.show_page(crate::app::PERIPHERALS_PAGE);
-                        }
-                    }
-                }
+                SideItem::Peripheral => self.draw_island_power(c, cx, mid),
                 SideItem::Music => paint::playback_bars(c, cx, mid, self.t, self.media.playing, theme::WHITE),
                 SideItem::Focus => {
                     let minutes = (self.pomo.remaining / 60.0).ceil().max(0.0) as u32;

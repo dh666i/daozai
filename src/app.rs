@@ -1786,7 +1786,11 @@ impl App {
     pub(crate) fn pet_enabled(&self)->bool {self.settings.pet && !self.effective_minimal() && !self.side()}
     pub(crate) fn pet_space(&self)->f32 {if self.pet_enabled(){44.0}else{0.0}}
     fn lyric_focus_space(&self)->f32 {if self.pomo.running{crate::focus_bar::LYRIC_WIDTH+10.0}else{0.0}}
-    fn lyric_bar_width(&self)->f32 {LYRIC_BAR_W+if self.pet_enabled(){48.0}else{0.0}+self.lyric_focus_space()}
+    fn lyric_content_width(&self) -> f32 { LYRIC_BAR_W + if self.pet_enabled() { 48.0 } else { 0.0 } }
+    fn lyric_power_space(&self) -> f32 {
+        if self.pinned_peripheral().is_some() { crate::peripherals::ui::COMPACT_WIDTH + 10.0 } else { 0.0 }
+    }
+    fn lyric_bar_width(&self)->f32 {self.lyric_content_width()+self.lyric_focus_space()+self.lyric_power_space()}
     fn notice_size(&self,a:&Alert)->(f32,f32) {
         let (width,height)=if a.meeting.is_some(){(360.0,136.0)}else if a.source==crate::extras::AlertSource::Internal && a.title=="蓝牙设备"{(HUD_W,48.0)}else if a.is_hud(){(HUD_W,38.0)}else{(334.0,44.0)};
         (width,height)
@@ -1800,6 +1804,14 @@ impl App {
     fn base_size(&self) -> (f32, f32) {
         if !self.compact_notices()&&!self.open {
             if let Some(a)=&self.notice {let (width,height)=self.notice_size(a);return (width+self.pet_space(),height);}
+        }
+        if self.pinned_peripheral().is_some() {
+            if self.screen_tools.active() {
+                return if self.side() { (crate::side_dock::SIDE_BAR_W, 84.0) } else { (100.0 + self.pet_space(), BAR_H) };
+            }
+            if self.effective_minimal() && !self.island_lyrics_active() && self.t >= self.notification_bell_until {
+                return if self.side() { (crate::side_dock::SIDE_BAR_W, 38.0) } else { (BAR_W_MIN, BAR_H) };
+            }
         }
         if self.side() {
             // 左右停靠：竖向胶囊（通知仍是贴边滑出的横向卡片，见上）。
@@ -1901,6 +1913,7 @@ impl App {
         if self.pinned_peripheral().is_some() { layout.append_peripheral(); }
         if self.pet_enabled() {
             if let Some(a)=self.notice.as_ref().filter(|_|!self.compact_notices()&&!self.open){layout.x[bar::PET]=Some(22.0-(self.notice_size(a).0+self.pet_space())/2.0);}
+            else if self.screen_tools.active() && self.pinned_peripheral().is_some() {layout.x[bar::PET]=Some(22.0-self.base_size().0/2.0);}
             else if self.island_lyrics_active() {layout.x[bar::PET]=Some(60.0-self.lyric_bar_width()/2.0);}
         }
         self.resident.step(layout,dt,ctx.style().animation_time>0.0&&bar::animations_enabled());
@@ -2039,7 +2052,7 @@ impl App {
         let notice_shape=notice_rect.map(|r|Rect::from_min_max(Pos2::new(r.left()-36.0,r.top()),r.max));
         let body=messenger_rect.filter(|_|outside_badge.is_none()).map_or(panel,|badge|panel.union(badge));
         let body=notice_shape.map_or(body,|notice|body.union(notice));
-        let minimal_strip = self.effective_minimal() && !self.island_lyrics_active() && self.notice.is_none() && self.t>=self.notification_bell_until;
+        let minimal_strip = self.effective_minimal() && self.pinned_peripheral().is_none() && !self.island_lyrics_active() && self.notice.is_none() && self.t>=self.notification_bell_until;
         let minimal_pill = minimal_strip && pc < 0.02;
         let flare = if minimal_pill || pill { 0.0 } else { lerp(5.0, FLARE, pc) };
         let k = (w / PW).clamp(0.3, 1.1);
@@ -2894,16 +2907,28 @@ impl App {
     // ---------------------------------------------------------------
     fn shared_header(&mut self, base: &Card, cx: f32, p: f32, reveal: f32, env: &Env) {
         let local_cx = cx - base.origin.x;
-        let fit=((WIN_W-32.0)/self.resident.target.width).min(1.0);
+        let lyric_mode = self.island_lyrics_active();
+        let fit=if lyric_mode || self.effective_minimal() {1.0} else {((WIN_W-32.0)/self.resident.target.width).min(1.0)};
         let fitted=base.scaled(local_cx,15.0,lerp(fit,1.0,p));
         let base=&fitted;
         let lyric=self.island_lyric().map(|(index,_)|index);
-        let lyric_alpha=if self.island_lyrics_active() {1.0-smoothstep(0.0,0.35,p)}else{0.0};
+        let compact_alpha = 1.0 - smoothstep(0.0, 0.35, p);
+        let lyric_alpha=if lyric_mode {compact_alpha}else{0.0};
+        let content_width = self.lyric_content_width();
+        let width = self.w.pos.max(content_width);
+        let left = local_cx - width / 2.0;
+        if !self.side() && compact_alpha > 0.004 && self.resident.target.x[bar::PERIPHERAL].is_some() {
+            let badge_x = if lyric_mode {
+                left + self.lyric_bar_width() - 14.0 - crate::peripherals::ui::COMPACT_WIDTH / 2.0
+            } else if self.effective_minimal() && self.t >= self.notification_bell_until {
+                local_cx
+            } else {
+                local_cx + self.resident.position(bar::PERIPHERAL)
+            };
+            self.draw_island_power(&base.faded(compact_alpha), badge_x, BAR_H / 2.0);
+        }
         if let Some(galley)=self.island_lyric_layout.clone().filter(|_|lyric_alpha>0.003) {
             let c=base.faded(lyric_alpha);
-            let content_width=self.lyric_bar_width()-self.lyric_focus_space();
-            let width=self.w.pos.max(content_width);
-            let left=local_cx-width/2.0;
             let center_y=BAR_H/2.0;
             if let Some((image,texture))=&self.music_artwork {
                 let [width,height]=image.size;
@@ -2926,8 +2951,9 @@ impl App {
             c.painter.galley(position,galley,if lyric.is_some(){theme::WHITE}else{theme::GRAY});
             paint::playback_bars(&c,left+content_width-21.0,center_y,self.t,self.media.playing,theme::WHITE);
             if self.pomo.running {
-                let alpha=smoothstep(0.88,1.0,(width-content_width)/self.lyric_focus_space());
-                crate::focus_bar::draw(&c.faded(alpha),left+width-14.0-crate::focus_bar::LYRIC_WIDTH/2.0,center_y,self.t,&self.pomo,self.phase_secs(self.pomo.phase),true);
+                let focus_right=(width-self.lyric_power_space()).min(content_width+self.lyric_focus_space());
+                let alpha=smoothstep(0.88,1.0,(focus_right-content_width)/self.lyric_focus_space());
+                crate::focus_bar::draw(&c.faded(alpha),left+focus_right-14.0-crate::focus_bar::LYRIC_WIDTH/2.0,center_y,self.t,&self.pomo,self.phase_secs(self.pomo.phase),true);
             }
         }
         if lyric_alpha>=0.997 {return;}
@@ -2955,15 +2981,6 @@ impl App {
         let pcx=layout.x[bar::CLOCK].map_or(hc,|x|local_cx+x-paint::clock_width(base,&clock,size::PILL_CLOCK)/2.0);
 
         if self.effective_minimal() && self.t>=self.notification_bell_until && p < 0.02 { return; }
-        if !self.side() && p < 0.35 {
-            if let (Some(x), Some(device)) = (layout.x[bar::PERIPHERAL], self.pinned_peripheral()) {
-                let badge = base.faded(1.0-smoothstep(0.0,0.35,p));
-                crate::peripherals::ui::draw_compact(&badge, local_cx+x, 15.0, device);
-                if badge.hit(local_cx+x-crate::peripherals::ui::COMPACT_WIDTH/2.0, 1.0, crate::peripherals::ui::COMPACT_WIDTH, 28.0, "open-peripheral-badge").clicked() {
-                    self.show_page(PERIPHERALS_PAGE);
-                }
-            }
-        }
         // 电池：位置/大小连续插值
         let bk = lerp(1.0, 0.8, m);
         let bpos = (lerp(pb.0, hb.0, m), lerp(pb.1, hb.1, m));
@@ -3040,6 +3057,16 @@ impl App {
         }
     }
 
+    pub(crate) fn draw_island_power(&mut self, c: &Card, cx: f32, cy: f32) {
+        let Some(device) = self.pinned_peripheral() else { return; };
+        crate::peripherals::ui::draw_compact(c, cx, cy, device);
+        if c.painter.opacity() < 0.8 { return; }
+        let width = crate::peripherals::ui::COMPACT_WIDTH;
+        if c.hit(cx-width/2.0, cy-14.0, width, 28.0, "open-peripheral-badge").clicked() {
+            self.show_page(PERIPHERALS_PAGE);
+        }
+    }
+
     /// 常驻内容：顶部停靠走共享元素过渡（药丸里的电池、时钟飞到顶栏）；
     /// 左右停靠时竖排内容随展开淡出，顶栏随面板内容淡入。
     fn resident_header(&mut self, base: &Card, panel: Rect, cx: f32, p: f32, reveal: f32, env: &Env) {
@@ -3047,13 +3074,18 @@ impl App {
             if let Some(label) = self.screen_tools.timer_label() {
                 let x = panel.center().x - base.origin.x;
                 let y = panel.center().y - base.origin.y;
+                let power = self.pinned_peripheral().is_some();
                 if self.side() {
+                    let y = if power { y - 9.0 } else { y };
                     let (minutes, seconds) = label.split_once(':').unwrap_or(("00", "00"));
                     base.circle(x, y - 20.0, 3.0, theme::RED);
                     base.text(x, y, minutes, 12.0, W::Bold, theme::WHITE, H::Center);
                     base.text(x, y + 15.0, seconds, 12.0, W::Bold, theme::WHITE, H::Center);
+                    if power { self.draw_island_power(base, x, y + 33.0); }
                 } else {
+                    let x = if power { x + self.pet_space()/2.0 - 16.0 } else { x };
                     base.text(x, y + 4.5, &label, 13.0, W::Bold, theme::RED, H::Center);
+                    if power { self.draw_island_power(base, x + 42.0, y); }
                 }
                 return;
             }
@@ -3061,10 +3093,11 @@ impl App {
         if !self.side() {self.shared_header(base,cx,p,reveal,env);return;}
         let bar_alpha=1.0-smoothstep(0.0,0.3,p);
         let minimal=self.effective_minimal()&&self.t>=self.notification_bell_until;
-        if bar_alpha>0.004 && !minimal {
+        if bar_alpha>0.004 {
             let c=base.shifted(panel.min.x-base.origin.x,panel.min.y-base.origin.y).faded(bar_alpha);
             let c=if bar_alpha<0.8 {c.ghost()} else {c};
-            self.side_bar(&c,panel.width(),panel.height(),env);
+            if minimal { self.draw_island_power(&c, panel.width()/2.0, panel.height()/2.0); }
+            else { self.side_bar(&c,panel.width(),panel.height(),env); }
         }
         if reveal>0.004 {self.shared_header(&base.faded(reveal),base.origin.x+PW/2.0,1.0,reveal,env);}
     }
@@ -3216,6 +3249,7 @@ impl App {
             RECORDER_PAGE => self.screen_tools.draw_recorder(c, cmds, &mut self.settings),
             PERIPHERALS_PAGE => {
                 if self.peripherals.draw(c, &mut self.settings.peripheral_pin) {
+                    self.peripherals.sync_selection(&mut self.settings);
                     self.settings.save();
                 }
             }

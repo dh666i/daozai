@@ -5,7 +5,7 @@ use eframe::egui::{self, Color32, Id};
 use std::f32::consts::{FRAC_PI_2, TAU};
 use std::time::Duration;
 
-pub(crate) const COMPACT_WIDTH: f32 = 52.0;
+pub(crate) const COMPACT_WIDTH: f32 = 24.0;
 const PAGE_SIZE: usize = 2;
 const FILL_SECONDS: f64 = 0.45;
 
@@ -127,17 +127,23 @@ fn draw_gauge(c: &Card, device: &Device, cx: f32, cy: f32, radius: f32) {
     let motion = ctx.style().animation_time > 0.0 && crate::bar_layout::animations_enabled();
     let level = animated_level(ctx, device, time, motion);
     let charging = device.charging == Some(true);
+    let low = device.is_low();
     let transitioning = level
         .zip(device.level)
         .is_some_and(|(shown, actual)| (shown - f32::from(actual) / 100.0).abs() > f32::EPSILON);
-    if c.live && motion && (charging || transitioning) {
+    if c.live && motion && (charging || low || transitioning) {
         let pass = ctx.cumulative_pass_nr();
         let key = frame_key(ctx);
         ctx.data_mut(|data| data.insert_temp(key, pass));
         ctx.request_repaint_after(Duration::from_secs_f64(1.0 / 60.0));
     }
 
-    let color = tint(device);
+    let color = if low && motion {
+        let light = (1.0 - (TAU * (time % 2.4) as f32 / 2.4).cos()) * 0.18;
+        paint::mix(tint(device), theme::WHITE, light)
+    } else {
+        tint(device)
+    };
     let width = (radius * 0.15).clamp(1.5, 3.5);
     c.ring(cx, cy, radius, width, theme::BTN_HOVER);
     if let Some(fill) = level {
@@ -145,8 +151,12 @@ fn draw_gauge(c: &Card, device: &Device, cx: f32, cy: f32, radius: f32) {
             c.ring(cx, cy, radius, width, color);
         } else if fill > 0.0 {
             c.arc(cx, cy, radius, -FRAC_PI_2, -FRAC_PI_2 + fill * TAU, width, color);
+        } else if low {
+            c.circle(cx, cy - radius, width / 2.0, color);
         }
     }
+    let size = radius * 1.36;
+    crate::extras::device_icon(c, device.kind, cx - size / 2.0, cy - size / 2.0, size);
     if charging {
         // Animate the charging symbol independently of the reported quantity.
         let progress = ((time % 1.6) / 1.6) as f32;
@@ -168,15 +178,19 @@ fn draw_gauge(c: &Card, device: &Device, cx: f32, cy: f32, radius: f32) {
                 );
             }
         }
-        let ink = paint::mix(theme::SOFT_GREEN, theme::CHARGE, light);
-        let s = radius * 0.59;
+        let cx = cx + radius * 0.68;
+        let cy = cy + radius * 0.68;
+        let badge = radius * 0.43;
+        c.circle(cx, cy, badge + 0.6, theme::CARD);
+        c.circle(cx, cy, badge, paint::mix(theme::SOFT_GREEN, theme::CHARGE, light));
+        let s = badge * 0.78;
         c.poly(
             &[
                 (cx + s * 0.23, cy - s),
                 (cx - s * 0.63, cy + s * 0.15),
                 (cx + s * 0.11, cy + s * 0.15),
             ],
-            ink,
+            theme::CARD,
         );
         c.poly(
             &[
@@ -184,28 +198,16 @@ fn draw_gauge(c: &Card, device: &Device, cx: f32, cy: f32, radius: f32) {
                 (cx + s * 0.63, cy - s * 0.12),
                 (cx - s * 0.23, cy + s),
             ],
-            ink,
+            theme::CARD,
         );
-    } else {
-        let size = radius * 1.36;
-        crate::extras::device_icon(c, device.kind, cx - size / 2.0, cy - size / 2.0, size);
     }
 }
 
 pub(crate) fn draw_compact(c: &Card, cx: f32, cy: f32, device: &Device) {
-    let text = percentage(device);
-    let width = c.text_w(&text, 11.0, W::Semibold);
-    let start = cx - (17.0 + 4.0 + width) / 2.0;
-    draw_gauge(c, device, start + 8.5, cy, 7.7);
-    c.centered_text(start + 21.0, cy, &text, 11.0, W::Semibold, theme::WHITE, H::Left);
+    draw_gauge(c, device, cx, cy, 9.5);
 }
 
-pub(crate) fn draw_side(c: &Card, cx: f32, cy: f32, device: &Device) {
-    draw_gauge(c, device, cx, cy - 6.0, 7.7);
-    c.centered_text(cx, cy + 8.5, &percentage(device), 9.5, W::Semibold, theme::WHITE, H::Center);
-}
-
-fn draw_device(c: &Card, device: &Device, y: f32, large: bool, pinned: &mut String) -> bool {
+fn draw_device(c: &Card, device: &Device, y: f32, large: bool, unavailable: bool, pinned: &mut String) -> bool {
     let (cx, radius, x, title_size, number_size, line_gap) = if large {
         (72.0, 24.0, 109.0, 15.0, 21.0, 10.0)
     } else {
@@ -214,10 +216,12 @@ fn draw_device(c: &Card, device: &Device, y: f32, large: bool, pinned: &mut Stri
     draw_gauge(c, device, cx, y, radius);
     let value = percentage(device);
     let number_w = c.text_w(&value, number_size, W::Semibold);
-    let title = c.fit(&device.name, title_size, W::Semibold, 340.0 - number_w - x - 10.0);
+    let value_right = if large { 374.0 } else { 296.0 };
+    let title_width = value_right - number_w - x - 10.0;
+    let title = c.fit(&device.name, title_size, W::Semibold, title_width);
     c.centered_text(x, y - line_gap, &title, title_size, W::Semibold, theme::WHITE, H::Left);
-    c.centered_text(340.0, y - line_gap, &value, number_size, W::Semibold, tint(device), H::Right);
-    let detail = format!("{} · {}", transport_name(device), status(device));
+    c.centered_text(value_right, y - line_gap, &value, number_size, W::Semibold, tint(device), H::Right);
+    let detail = format!("{} · {}", transport_name(device), if unavailable { "暂时无法读取" } else { status(device) });
     c.centered_text(
         x,
         y + line_gap,
@@ -229,18 +233,28 @@ fn draw_device(c: &Card, device: &Device, y: f32, large: bool, pinned: &mut Stri
     );
 
     let selected = pinned == &device.id;
-    let response = c
-        .hit(346.0, y - 14.0, 30.0, 28.0, ("peripheral-pin", &device.id))
+    let button_y = if large { 103.0 } else { y - 10.0 };
+    let (response, button) = paint::capsule(
+        c,
+        306.0,
+        button_y,
+        68.0,
+        20.0,
+        &format!("island-peripheral-{}", device.id),
+        Color32::from_gray(if selected { 39 } else { 22 }),
+        Color32::from_gray(47),
+    );
+    button.text(
+        340.0, button_y + 14.0, "岛上电量", 10.0, W::Semibold,
+        if selected { theme::WHITE } else { theme::GRAY }, H::Center,
+    );
+    let response = response
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .on_hover_text(if selected {
-            "取消固定到小岛"
+            "关闭这台外设的岛上电量"
         } else {
-            "固定到小岛"
+            "收起时显示这台外设的电量"
         });
-    let (hover, press) = c.hover_t(&response);
-    let button = c.scaled(361.0, y, 1.0 - 0.09 * press);
-    button.circle(361.0, y, 10.0, paint::mix(theme::CARD, theme::BTN_HOVER, hover));
-    paint::pin(&button, 361.0, y, 10.5, if selected { theme::CYAN } else { theme::GRAY });
     let changed = c.live && response.clicked();
     if changed {
         if selected {
@@ -251,7 +265,7 @@ fn draw_device(c: &Card, device: &Device, y: f32, large: bool, pinned: &mut Stri
     }
     if title != device.name && c.live {
         c.ui.interact(
-            c.rect(x, y - line_gap - 9.0, 340.0 - number_w - x - 10.0, 18.0),
+            c.rect(x, y - line_gap - 9.0, title_width, 18.0),
             Id::new(("peripheral-name", &device.id)),
             egui::Sense::hover(),
         )
@@ -300,7 +314,7 @@ impl Panel {
             if row > 0 {
                 c.seg((45.0, top + step / 2.0), (374.0, top + step / 2.0), 1.0, theme::TRACK);
             }
-            pin_changed |= draw_device(c, device, top + row as f32 * step, large, pinned);
+            pin_changed |= draw_device(c, device, top + row as f32 * step, large, self.is_unavailable(&device.id), pinned);
         }
         if let Some(error) = self.error.as_deref() {
             c.centered_text(45.0, 113.0, "部分外设读取失败", 10.0, W::Regular, theme::DIM, H::Left);
@@ -388,10 +402,11 @@ mod tests {
     }
 
     #[test]
-    fn pinned_readings_fit_both_docks_at_full_charge() {
+    fn collapsed_gauges_fit_both_docks_and_keep_device_icons_while_charging() {
         let ctx = egui::Context::default();
-        theme::load_fonts(&ctx);
-        let device = device("键盘", DeviceKind::Keyboard, Some(100), Some(true));
+        egui_extras::install_image_loaders(&ctx);
+        let mouse = device("鼠标", DeviceKind::Mouse, Some(20), Some(true));
+        let keyboard = device("键盘", DeviceKind::Keyboard, Some(100), Some(true));
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(130.0, 40.0));
         let top = egui::Rect::from_center_size(egui::pos2(30.0, 20.0), egui::vec2(COMPACT_WIDTH, 30.0));
         let side = egui::Rect::from_center_size(egui::pos2(92.0, 20.0), egui::vec2(30.0, 32.0));
@@ -403,22 +418,29 @@ mod tests {
             |ctx| {
                 egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                     let c = Card::new(ui, screen.min, screen);
-                    draw_compact(&c, top.center().x, top.center().y, &device);
-                    draw_side(&c, side.center().x, side.center().y, &device);
+                    draw_compact(&c, top.center().x, top.center().y, &mouse);
+                    draw_compact(&c, side.center().x, side.center().y, &keyboard);
                     assert_eq!(needs_frame(ctx), crate::bar_layout::animations_enabled());
                 });
             },
         );
-        let labels: Vec<_> = output
-            .shapes
-            .iter()
-            .filter_map(|shape| match &shape.shape {
-                egui::Shape::Text(t) if t.galley.text() == "100%" => Some(t.visual_bounding_rect()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(labels.len(), 2);
-        assert!(top.contains_rect(labels[0]) && side.contains_rect(labels[1]), "{labels:?}");
+        let mut icons = Vec::new();
+        for clipped in output.shapes {
+            let bounds = clipped.shape.visual_bounding_rect();
+            match clipped.shape {
+                egui::Shape::Text(text) => panic!("unexpected collapsed label: {}", text.galley.text()),
+                egui::Shape::Mesh(mesh) if mesh.texture_id != egui::TextureId::default() => {
+                    icons.push((mesh.texture_id, bounds));
+                }
+                egui::Shape::Circle(_) | egui::Shape::Path(_) => {
+                    assert!(top.contains_rect(bounds) || side.contains_rect(bounds), "{bounds:?}");
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(icons.len(), 2);
+        assert_ne!(icons[0].0, icons[1].0, "each charging device must keep its own icon");
+        assert!(top.contains_rect(icons[0].1) && side.contains_rect(icons[1].1));
     }
 
     #[test]
@@ -427,6 +449,7 @@ mod tests {
             return;
         }
         let ctx = egui::Context::default();
+        egui_extras::install_image_loaders(&ctx);
         let d = device("鼠标", DeviceKind::Mouse, Some(22), Some(true));
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(64.0, 64.0));
         let mut raster = crate::preview_raster::Raster::new(128, 128);
@@ -451,7 +474,7 @@ mod tests {
                 },
                 |ctx| {
                     egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
-                        draw_gauge(&Card::new(ui, screen.min, screen), &d, 32.0, 32.0, 24.0);
+                        draw_compact(&Card::new(ui, screen.min, screen), 32.0, 32.0, &d);
                     });
                 },
             );
@@ -468,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn paging_pinning_and_charging_repaint_follow_visible_devices() {
+    fn island_power_toggle_selects_one_device_across_pages_and_keeps_full_readings() {
         let ctx = egui::Context::default();
         theme::load_fonts(&ctx);
         egui_extras::install_image_loaders(&ctx);
@@ -507,6 +530,7 @@ mod tests {
         };
         let (first, animating) = frame(&mut panel, &mut pinned, vec![]);
         assert!(first.iter().any(|t| t == "22%") && first.iter().any(|t| t == "—"));
+        assert_eq!(first.iter().filter(|t| t.as_str() == "岛上电量").count(), 2);
         assert!(!animating);
         let click = |panel: &mut Panel, pinned: &mut String, pos| {
             frame(panel, pinned, vec![egui::Event::PointerMoved(pos)]);
@@ -539,5 +563,7 @@ mod tests {
         panel.devices.truncate(1);
         frame(&mut panel, &mut pinned, vec![]);
         assert_eq!(panel.page, 0);
+        click(&mut panel, &mut pinned, egui::pos2(340.0, 113.0));
+        assert_eq!(pinned, "鼠标");
     }
 }

@@ -14,7 +14,7 @@ pub struct Device {
     pub kind: DeviceKind,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DeviceKind {
     Bone,
     Earbuds,

@@ -10,6 +10,8 @@ mod doubao;
 mod weather_source;
 #[path="lyrics_switch_ui_tests.rs"]
 mod lyrics_switch;
+#[path="peripherals/resident_tests.rs"]
+mod island_power;
 #[path="health_reminder_ui_tests.rs"]
 mod health_reminder;
 #[path="settings_redesign_ui_tests.rs"]
