@@ -1,4 +1,5 @@
-use super::{Device, Panel, Transport};
+use super::{Device, Panel, PowerState, Transport};
+use crate::model::Skin;
 use crate::paint::{self, Card, H};
 use crate::theme::{self, W};
 use eframe::egui::{self, Color32, Id};
@@ -9,14 +10,14 @@ pub(crate) const COMPACT_WIDTH: f32 = 24.0;
 const PAGE_SIZE: usize = 2;
 const FILL_SECONDS: f64 = 0.45;
 
-fn status(device: &Device, low: bool) -> &'static str {
-    if device.charging == Some(true) {
+fn status(device: &Device, state: PowerState) -> &'static str {
+    if state == PowerState::Charging {
         return "充电中";
     }
-    if device.is_full() {
+    if state == PowerState::Full {
         return "电量已满";
     }
-    if low {
+    if state.is_low() {
         return if device.charging.is_none() {
             "低电量 · 充电状态未知"
         } else {
@@ -31,15 +32,13 @@ fn status(device: &Device, low: bool) -> &'static str {
     }
 }
 
-fn tint(device: &Device, low: bool) -> Color32 {
-    if device.charging == Some(true) || device.is_full() {
-        theme::GREEN
-    } else if low {
-        theme::YELLOW
-    } else if device.level.is_some() {
-        theme::CYAN
-    } else {
-        theme::DIM
+fn tint(state: PowerState) -> Color32 {
+    match state {
+        PowerState::Charging | PowerState::Full => theme::GREEN,
+        PowerState::Normal => Color32::WHITE,
+        PowerState::Low => Color32::from_rgb(255, 214, 10),
+        PowerState::Critical => Color32::from_rgb(255, 69, 58),
+        PowerState::Unknown => theme::DIM,
     }
 }
 
@@ -112,7 +111,23 @@ pub(crate) fn needs_frame(ctx: &egui::Context) -> bool {
     ctx.data(|data| data.get_temp::<u64>(key) == Some(pass))
 }
 
-fn draw_gauge(c: &Card, device: &Device, low: bool, cx: f32, cy: f32, radius: f32) {
+fn light_skin(skin: Skin) -> bool {
+    matches!(skin, Skin::Cream | Skin::GlassLight)
+}
+
+// Keep the meter's original ink and its local dark background together during skin recoloring.
+fn battery_colors(c: &Card, light: bool, draw: impl FnOnce()) {
+    if light {
+        let (ctx, layer) = (c.ui.ctx(), c.painter.layer_id());
+        let start = crate::skin_paint::shape_count(ctx, layer);
+        draw();
+        crate::skin_paint::tone_since(ctx, layer, start, |color, _| color);
+    } else {
+        draw();
+    }
+}
+
+fn draw_gauge(c: &Card, device: &Device, state: PowerState, cx: f32, cy: f32, radius: f32, light: bool) {
     let diameter = radius * 2.0;
     if c.painter.opacity() <= 0.0
         || !c
@@ -126,7 +141,8 @@ fn draw_gauge(c: &Card, device: &Device, low: bool, cx: f32, cy: f32, radius: f3
     let time = ctx.input(|i| i.time);
     let motion = ctx.style().animation_time > 0.0 && crate::bar_layout::animations_enabled();
     let level = animated_level(ctx, device, time, motion);
-    let charging = device.charging == Some(true);
+    let charging = state == PowerState::Charging;
+    let low = state.is_low();
     let transitioning = level
         .zip(device.level)
         .is_some_and(|(shown, actual)| (shown - f32::from(actual) / 100.0).abs() > f32::EPSILON);
@@ -137,26 +153,29 @@ fn draw_gauge(c: &Card, device: &Device, low: bool, cx: f32, cy: f32, radius: f3
         ctx.request_repaint_after(Duration::from_secs_f64(1.0 / 60.0));
     }
 
-    let color = if low && motion {
-        let light = (1.0 - (TAU * (time % 2.4) as f32 / 2.4).cos()) * 0.18;
-        paint::mix(tint(device, low), theme::WHITE, light)
-    } else {
-        tint(device, low)
-    };
+    let color = tint(state);
     let width = (radius * 0.15).clamp(1.5, 3.5);
-    c.ring(cx, cy, radius, width, theme::BTN_HOVER);
-    if let Some(fill) = level {
-        if fill >= 1.0 {
-            c.ring(cx, cy, radius, width, color);
-        } else if fill > 0.0 {
-            c.arc(cx, cy, radius, -FRAC_PI_2, -FRAC_PI_2 + fill * TAU, width, color);
-        } else if low {
-            c.circle(cx, cy - radius, width / 2.0, color);
+    battery_colors(c, light, || {
+        if light { c.circle(cx, cy, radius + width * 0.7 + 0.7, theme::CARD); }
+        c.ring(cx, cy, radius, width, theme::BTN_HOVER);
+        let width = if low && motion {
+            let pulse = (1.0 - (TAU * (time % 2.4) as f32 / 2.4).cos()) * 0.18;
+            width * (1.0 + pulse)
+        } else {
+            width
+        };
+        if let Some(fill) = level {
+            if fill >= 1.0 {
+                c.ring(cx, cy, radius, width, color);
+            } else if fill > 0.0 {
+                c.arc(cx, cy, radius, -FRAC_PI_2, -FRAC_PI_2 + fill * TAU, width, color);
+            } else if low {
+                c.circle(cx, cy - radius, width / 2.0, color);
+            }
         }
-    }
-    let size = radius * 1.36;
-    crate::extras::device_icon(c, device.kind, cx - size / 2.0, cy - size / 2.0, size);
-    if charging {
+        let size = radius * 1.36;
+        crate::extras::device_icon(c, device.kind, cx - size / 2.0, cy - size / 2.0, size);
+        if !charging { return; }
         // Animate the charging symbol independently of the reported quantity.
         let progress = ((time % 1.6) / 1.6) as f32;
         let light = if motion { (1.0 - (progress * TAU).cos()) * 0.5 } else { 1.0 };
@@ -199,24 +218,32 @@ fn draw_gauge(c: &Card, device: &Device, low: bool, cx: f32, cy: f32, radius: f3
             ],
             theme::CARD,
         );
-    }
+    });
 }
 
-fn draw_device(c: &Card, device: &Device, low: bool, y: f32, large: bool, unavailable: bool, pinned: &mut String) -> bool {
+fn draw_device(c: &Card, device: &Device, y: f32, large: bool, unavailable: bool, pinned: &mut String, light: bool) -> bool {
     let (cx, radius, x, title_size, number_size, line_gap) = if large {
         (72.0, 24.0, 109.0, 15.0, 21.0, 10.0)
     } else {
         (59.0, 13.5, 83.0, 12.0, 14.0, 7.0)
     };
-    draw_gauge(c, device, low, cx, y, radius);
+    let state = device.power_state();
+    draw_gauge(c, device, state, cx, y, radius, light);
     let value = percentage(device);
     let number_w = c.text_w(&value, number_size, W::Semibold);
     let value_right = if large { 374.0 } else { 296.0 };
     let title_width = value_right - number_w - x - 10.0;
     let title = c.fit(&device.name, title_size, W::Semibold, title_width);
     c.centered_text(x, y - line_gap, &title, title_size, W::Semibold, theme::WHITE, H::Left);
-    c.centered_text(value_right, y - line_gap, &value, number_size, W::Semibold, tint(device, low), H::Right);
-    let detail = format!("{} · {}", transport_name(device), if unavailable { "暂时无法读取" } else { status(device, low) });
+    let value_y = y - line_gap;
+    battery_colors(c, light, || {
+        if light {
+            let h = number_size + 5.0;
+            c.fill(value_right - number_w - 4.0, value_y - h / 2.0, number_w + 8.0, h, 5.0, theme::CARD);
+        }
+        c.centered_text(value_right, value_y, &value, number_size, W::Semibold, tint(state), H::Right);
+    });
+    let detail = format!("{} · {}", transport_name(device), if unavailable { "暂时无法读取" } else { status(device, state) });
     c.centered_text(
         x,
         y + line_gap,
@@ -270,11 +297,11 @@ fn draw_device(c: &Card, device: &Device, low: bool, y: f32, large: bool, unavai
 }
 
 impl Panel {
-    pub(crate) fn draw_compact(&self, c: &Card, cx: f32, cy: f32, device: &Device) {
-        draw_gauge(c, device, self.low_indicator(device), cx, cy, 9.5);
+    pub(crate) fn draw_compact(&self, c: &Card, cx: f32, cy: f32, device: &Device, skin: Skin) {
+        draw_gauge(c, device, device.power_state(), cx, cy, 9.5, light_skin(skin));
     }
 
-    pub(crate) fn draw(&mut self, c: &Card, pinned: &mut String) -> bool {
+    pub(crate) fn draw(&mut self, c: &Card, pinned: &mut String, skin: Skin) -> bool {
         let page_count = self.devices.len().div_ceil(PAGE_SIZE);
         self.page = self.page.min(page_count.saturating_sub(1));
         if self.devices.is_empty() {
@@ -313,7 +340,7 @@ impl Panel {
             if row > 0 {
                 c.seg((45.0, top + step / 2.0), (374.0, top + step / 2.0), 1.0, theme::TRACK);
             }
-            pin_changed |= draw_device(c, device, self.low_indicator(device), top + row as f32 * step, large, self.is_unavailable(&device.id), pinned);
+            pin_changed |= draw_device(c, device, top + row as f32 * step, large, self.is_unavailable(&device.id), pinned, light_skin(skin));
         }
         if let Some(error) = self.error.as_deref() {
             c.centered_text(45.0, 113.0, "部分外设读取失败", 10.0, W::Regular, theme::DIM, H::Left);
@@ -374,12 +401,81 @@ mod tests {
     }
 
     #[test]
+    fn palette_boundaries_and_charging_priority() {
+        for (level, state, color) in [
+            (None, PowerState::Unknown, theme::DIM),
+            (Some(0), PowerState::Critical, Color32::from_rgb(255, 69, 58)),
+            (Some(10), PowerState::Critical, Color32::from_rgb(255, 69, 58)),
+            (Some(11), PowerState::Low, Color32::from_rgb(255, 214, 10)),
+            (Some(20), PowerState::Low, Color32::from_rgb(255, 214, 10)),
+            (Some(21), PowerState::Normal, Color32::WHITE),
+            (Some(99), PowerState::Normal, Color32::WHITE),
+            (Some(100), PowerState::Full, Color32::from_rgb(48, 209, 88)),
+        ] {
+            for charging in [Some(false), None] {
+                let d = device("鼠标", DeviceKind::Mouse, level, charging);
+                assert_eq!(d.power_state(), state);
+                assert_eq!(tint(d.power_state()), color);
+            }
+            let charging = device("鼠标", DeviceKind::Mouse, level, Some(true));
+            assert_eq!(charging.power_state(), PowerState::Charging);
+            assert_eq!(tint(charging.power_state()), Color32::from_rgb(48, 209, 88));
+        }
+    }
+
+    #[test]
+    fn light_skins_keep_both_gauges_and_percentage_in_the_battery_palette() {
+        use crate::skin_paint::{recolor_layer, shape_count, CREAM, GLASS_LIGHT};
+        use egui::{epaint::ColorMode, Shape};
+        let ctx = egui::Context::default();
+        theme::load_fonts(&ctx);
+        ctx.style_mut(|s| s.animation_time = 0.0);
+        egui_extras::install_image_loaders(&ctx);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(419.0, 140.0));
+        for (skin, palette) in [(Skin::Cream, CREAM), (Skin::GlassLight, GLASS_LIGHT)] {
+            for level in [10, 20, 21, 100] {
+                let d = device("Mouse", DeviceKind::Mouse, Some(level), Some(false));
+                let expected = tint(d.power_state());
+                let value = percentage(&d);
+                let mut panel = Panel { devices: vec![d.clone()], ..Default::default() };
+                let out = ctx.run(egui::RawInput { screen_rect: Some(screen), ..Default::default() }, |ctx| {
+                    egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
+                        let c = Card::new(ui, screen.min, screen);
+                        panel.draw_compact(&c, 16.0, 16.0, &d, skin);
+                        panel.draw(&c, &mut String::new(), skin);
+                        let layer = c.painter.layer_id();
+                        recolor_layer(ctx, layer, &[(0, shape_count(ctx, layer))], &palette);
+                    });
+                });
+                let mut rings = 0;
+                let mut gauge_grounds = 0;
+                let mut value_ink = None;
+                let mut value_ground = false;
+                for shape in out.shapes.iter().map(|clipped| &clipped.shape) {
+                    match shape {
+                        Shape::Circle(c) if c.fill == theme::CARD => gauge_grounds += 1,
+                        Shape::Circle(c) if c.stroke.color == expected => rings += 1,
+                        Shape::Path(p) if matches!(p.stroke.color, ColorMode::Solid(color) if color == expected) => rings += 1,
+                        Shape::Rect(r) if r.fill == theme::CARD && r.rect.contains(egui::pos2(370.0, 64.0)) => value_ground = true,
+                        Shape::Text(t) if t.galley.text() == value => {
+                            value_ink = t.galley.rows.iter().flat_map(|r| &r.visuals.mesh.vertices).next().map(|v| v.color);
+                        }
+                        _ => {}
+                    }
+                }
+                assert_eq!((rings, gauge_grounds), (2, 2), "{skin:?} {level}%");
+                assert!(value_ground, "{skin:?} {level}%");
+                assert_eq!(value_ink, Some(expected), "{skin:?} {level}%");
+            }
+        }
+    }
+
+    #[test]
     fn unknown_readings_clear_interpolation_and_remain_distinct_from_zero() {
         let ctx = egui::Context::default();
         let mut d = device("耳机", DeviceKind::Earbuds, Some(0), None);
         assert_eq!(percentage(&d), "0%");
-        let panel = Panel::default();
-        assert!(status(&d, panel.low_indicator(&d)).contains("低电量"));
+        assert!(status(&d, d.power_state()).contains("低电量"));
         assert_eq!(animated_level(&ctx, &d, 0.0, true), Some(0.0));
         d.level = Some(80);
         assert_eq!(animated_level(&ctx, &d, 1.0, true), Some(0.0));
@@ -391,14 +487,14 @@ mod tests {
         d.level = None;
         assert_eq!(animated_level(&ctx, &d, 3.0, true), None);
         assert_eq!(percentage(&d), "—");
-        assert!(status(&d, panel.low_indicator(&d)).contains("未知"));
+        assert!(status(&d, d.power_state()).contains("未知"));
         d.level = Some(100);
         assert_eq!(animated_level(&ctx, &d, 4.0, true), Some(1.0));
-        assert_eq!(status(&d, panel.low_indicator(&d)), "电量已满");
+        assert_eq!(status(&d, d.power_state()), "电量已满");
         d.level = Some(5);
         d.charging = Some(true);
         assert_eq!(animated_level(&ctx, &d, 5.0, false), Some(0.05));
-        assert_eq!(status(&d, panel.low_indicator(&d)), "充电中");
+        assert_eq!(status(&d, d.power_state()), "充电中");
     }
 
     #[test]
@@ -419,8 +515,8 @@ mod tests {
                 egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
                     let c = Card::new(ui, screen.min, screen);
                     let panel = Panel::default();
-                    panel.draw_compact(&c, top.center().x, top.center().y, &mouse);
-                    panel.draw_compact(&c, side.center().x, side.center().y, &keyboard);
+                    panel.draw_compact(&c, top.center().x, top.center().y, &mouse, Skin::Classic);
+                    panel.draw_compact(&c, side.center().x, side.center().y, &keyboard, Skin::Classic);
                     assert_eq!(needs_frame(ctx), crate::bar_layout::animations_enabled());
                 });
             },
@@ -475,7 +571,7 @@ mod tests {
                 },
                 |ctx| {
                     egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
-                        Panel::default().draw_compact(&Card::new(ui, screen.min, screen), 32.0, 32.0, &d);
+                        Panel::default().draw_compact(&Card::new(ui, screen.min, screen), 32.0, 32.0, &d, Skin::Classic);
                     });
                 },
             );
@@ -514,7 +610,7 @@ mod tests {
                 },
                 |ctx| {
                     egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
-                        panel.draw(&Card::new(ui, screen.min, screen), pinned);
+                        panel.draw(&Card::new(ui, screen.min, screen), pinned, Skin::Classic);
                         animating = needs_frame(ctx);
                     });
                 },

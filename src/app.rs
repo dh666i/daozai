@@ -3063,7 +3063,7 @@ impl App {
 
     pub(crate) fn draw_island_power(&mut self, c: &Card, cx: f32, cy: f32) {
         let Some(device) = self.pinned_peripheral() else { return; };
-        self.peripherals.draw_compact(c, cx, cy, device);
+        self.peripherals.draw_compact(c, cx, cy, device, self.settings.skin);
         if c.painter.opacity() < 0.8 { return; }
         let width = crate::peripherals::ui::COMPACT_WIDTH;
         if c.hit(cx-width/2.0, cy-14.0, width, 28.0, "open-peripheral-badge").clicked() {
@@ -3252,7 +3252,7 @@ impl App {
             8 => self.page_weather(c,env,cmds),
             RECORDER_PAGE => self.screen_tools.draw_recorder(c, cmds, &mut self.settings),
             PERIPHERALS_PAGE => {
-                if self.peripherals.draw(c, &mut self.settings.peripheral_pin) {
+                if self.peripherals.draw(c, &mut self.settings.peripheral_pin, self.settings.skin) {
                     self.peripherals.sync_selection(&mut self.settings);
                     self.settings.save();
                 }

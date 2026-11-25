@@ -26,6 +26,13 @@ pub(crate) struct Device {
     pub threshold: Option<u8>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PowerState { Charging, Full, Normal, Low, Critical, Unknown }
+
+impl PowerState {
+    fn is_low(self) -> bool { matches!(self, Self::Low | Self::Critical) }
+}
+
 impl Device {
     fn same_identity(&self, other: &Device) -> bool {
         self.id == other.id && self.name == other.name && self.kind == other.kind
@@ -49,7 +56,16 @@ impl Device {
         Self { id: id.into(), name: name.into(), kind, transport, level: None, charging: None, threshold: None }
     }
 
-    fn is_full(&self) -> bool { self.level == Some(100) && self.charging != Some(true) }
+    fn power_state(&self) -> PowerState {
+        if self.charging == Some(true) { return PowerState::Charging; }
+        match self.level {
+            Some(100) => PowerState::Full,
+            Some(0..=10) => PowerState::Critical,
+            Some(11..=20) => PowerState::Low,
+            Some(_) => PowerState::Normal,
+            None => PowerState::Unknown,
+        }
+    }
     fn low_reading(&self, threshold: u8, active: bool) -> Option<u8> {
         self.level.filter(|&level| self.charging != Some(true) && level < 100
             && (level <= threshold || (active && level < threshold.saturating_add(3))))
@@ -191,13 +207,6 @@ impl Panel {
             self.auto_selected = next.map(|device| device.id.clone());
         }
         result
-    }
-
-    fn low_indicator(&self, device: &Device) -> bool {
-        let threshold = self.thresholds.warning.max(self.thresholds.resident)
-            .or(device.threshold).unwrap_or(20);
-        let active = self.auto_low.contains(&device.id) || self.warned.contains(&device.id);
-        threshold != 0 && device.low_reading(threshold, active).is_some()
     }
 
     fn pinned(&self, id: &str) -> Option<&Device> { self.devices.iter().find(|d| d.id == id) }
@@ -368,7 +377,8 @@ mod tests {
             assert_eq!(scan(&mut panel, &settings, vec![reading("mouse", Some(level))]),
                 (warnings, resident.then(|| "mouse".into())), "{level}%");
         }
-        assert!(panel.low_indicator(&panel.devices[0]));
+        assert!(panel.warned.contains("mouse"));
+        assert_eq!(panel.devices[0].power_state(), PowerState::Low);
         assert!(panel.update_low_power(&settings).is_empty()); // repeat render
         assert!(settings.peripheral_pin.is_empty());
     }
@@ -390,8 +400,10 @@ mod tests {
         settings.peripheral_warn_at = 100;
         settings.peripheral_auto_at = 100;
         assert_eq!(scan(&mut panel, &settings, vec![reading("mouse", Some(100))]), (0, None));
-        assert!(!panel.low_indicator(&panel.devices[0]));
+        assert!(!panel.warned.contains("mouse"));
+        assert_eq!(panel.devices[0].power_state(), PowerState::Full);
         assert_eq!(scan(&mut panel, &settings, vec![reading("mouse", Some(99))]), (1, shown));
+        assert_eq!(panel.devices[0].power_state(), PowerState::Normal);
     }
 
     #[test]
@@ -428,13 +440,15 @@ mod tests {
         settings.peripheral_auto_at = 18; // apply the new limit immediately even inside the old recovery band
         assert!(panel.update_low_power(&settings).is_empty());
         assert!(panel.resident(&settings).is_none());
-        assert!(!panel.low_indicator(&panel.devices[0]));
+        assert!(!panel.warned.contains("mouse"));
+        assert_eq!(panel.devices[0].power_state(), PowerState::Low);
         settings.peripheral_low_alert = true;
         assert_eq!(panel.update_low_power(&settings).len(), 1);
-        assert!(panel.low_indicator(&panel.devices[0]));
+        assert!(panel.warned.contains("mouse"));
         settings.peripheral_warn_at = 18;
         assert!(panel.update_low_power(&settings).is_empty());
-        assert!(!panel.low_indicator(&panel.devices[0]));
+        assert!(!panel.warned.contains("mouse"));
+        assert_eq!(panel.devices[0].power_state(), PowerState::Low);
         settings.peripheral_auto_at = 19;
         assert!(panel.update_low_power(&settings).is_empty());
         assert!(panel.resident(&settings).is_some());
@@ -453,7 +467,8 @@ mod tests {
         settings.peripheral_warn_at = 1;
         assert!(panel.update_low_power(&settings).is_empty());
         assert_eq!(scan(&mut panel, &settings, vec![reading("mouse", Some(2))]), (0, None));
-        assert!(!panel.low_indicator(&panel.devices[0]));
+        assert!(!panel.warned.contains("mouse"));
+        assert_eq!(panel.devices[0].power_state(), PowerState::Critical);
         assert_eq!(scan(&mut panel, &settings, vec![reading("mouse", Some(1))]), (1, None));
         assert_eq!(scan(&mut panel, &settings, vec![reading("mouse", Some(0))]), (0, None));
     }
