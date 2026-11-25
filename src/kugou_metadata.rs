@@ -201,8 +201,11 @@ impl Cache {
         found
     }
     fn due(&self)->bool{
+        self.due_at(Instant::now())
+    }
+    fn due_at(&self, now:Instant)->bool{
         self.value.is_none() && self.failures<RETRY.len()
-            && self.checked.is_none_or(|at|self.failures==0 || at.elapsed()>=RETRY[self.failures-1])
+            && self.checked.is_none_or(|at|self.failures==0 || now.saturating_duration_since(at)>=RETRY[self.failures-1])
     }
     /// `need_duration` 为假（系统已给出有效曲长）时只用窗口标题补全歌手，不扫描进程内存。
     pub fn get(&mut self,title:&str,artist:&str,need_duration:bool)->Option<(String,f64)>{
@@ -271,13 +274,14 @@ mod tests {
     #[test]
     fn failed_scans_back_off_then_stop_for_the_same_song(){
         let mut cache=Cache::default();
-        assert!(cache.due());
-        cache.checked=Some(Instant::now());cache.failures=1;assert!(!cache.due(),"失败后不能下一轮立刻重扫");
-        cache.checked=Some(Instant::now()-Duration::from_secs(6));assert!(cache.due());
-        cache.failures=2;assert!(!cache.due());
-        cache.checked=Some(Instant::now()-Duration::from_secs(31));assert!(cache.due());
-        cache.failures=3;cache.checked=Some(Instant::now()-Duration::from_secs(3600));assert!(!cache.due(),"同一首歌三次失败后不再扫描");
-        cache.failures=0;cache.value=Some(("a".into(),1.0));assert!(!cache.due(),"已拿到曲长不再扫描");
+        let start=Instant::now();
+        assert!(cache.due_at(start));
+        cache.checked=Some(start);cache.failures=1;assert!(!cache.due_at(start),"失败后不能下一轮立刻重扫");
+        assert!(cache.due_at(start+Duration::from_secs(5)));
+        cache.failures=2;assert!(!cache.due_at(start+Duration::from_secs(6)));
+        assert!(cache.due_at(start+Duration::from_secs(30)));
+        cache.failures=3;assert!(!cache.due_at(start+Duration::from_secs(3600)),"同一首歌三次失败后不再扫描");
+        cache.failures=0;cache.value=Some(("a".into(),1.0));assert!(!cache.due_at(start),"已拿到曲长不再扫描");
     }
     #[test]
     fn scan_finds_markers_anywhere_including_after_quotes(){

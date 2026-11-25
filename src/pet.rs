@@ -174,10 +174,10 @@ mod tests {
         assert!((pet.music_age-music_age-0.1).abs()<0.001,"恢复听歌后继续轮换");
     }
     #[test]
-    fn microphone_moves_gently_while_the_head_keeps_facing_the_mouth() {
+    fn microphone_moves_toward_the_mouth_and_lowers_for_breaths() {
         let mut heights=Vec::new();let mut angles=Vec::new();
         for frame in 0..600 {
-            let (head,angle)=microphone_pose(frame as f32/60.0);
+            let (head,angle)=SingingMotion::at(frame as f32/60.0, true).microphone();
             let tip=[head[0]+7.0*angle.cos(),head[1]+7.0*angle.sin()];
             let distance=|p:[f32;2]|((p[0]+0.8).powi(2)+(p[1]-20.7).powi(2)).sqrt();
             assert!(distance(head)<distance(tip),"麦头应在嘴边，麦柄朝外");
@@ -186,8 +186,57 @@ mod tests {
             heights.push(head[1]);angles.push(angle);
         }
         let range=|values:Vec<f32>|values.iter().copied().fold(f32::NEG_INFINITY,f32::max)-values.iter().copied().fold(f32::INFINITY,f32::min);
-        assert!((0.6..1.1).contains(&range(heights)),"麦头应有细微起伏");
-        assert!((0.10..0.18).contains(&range(angles)),"麦柄应有轻微转动");
+        assert!((2.0..2.4).contains(&range(heights)), "换气和唱歌时的麦头要看得出高度变化");
+        assert!((0.39..0.64).contains(&range(angles)), "麦柄随重拍转动");
+    }
+
+    #[test]
+    fn all_singing_poses_visibly_move_throughout_the_hold_at_native_size() {
+        use eframe::egui::{self, Pos2, Rect, Vec2};
+        if !crate::bar_layout::animations_enabled() { return; }
+        let ctx = egui::Context::default();
+        let mut raster = crate::preview_raster::Raster::new(48, 32);
+        let mut segment_start = 0.0;
+        for expression in MUSIC_EXPRESSIONS.into_iter().take(6) {
+            let mut pet = Pet { music_age: segment_start + 1.0, ..Default::default() };
+            let pose = pet.music_pose();
+            let mut previous = Vec::new();
+            let mut quarter = Vec::new();
+            let mut moving = 0;
+            let mut strongest = 0;
+            for frame in 0..(14 * 60) {
+                pet.step(PetState::Music, frame as f64 / 60.0, 1.0 / 60.0, [0.0; 2], true);
+                let input = egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(48.0, 32.0))),
+                    ..Default::default()
+                };
+                let output = ctx.run(input, |ctx| {
+                    egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
+                        pet.draw(&Card::new(ui, Pos2::ZERO, ui.max_rect()), 24.0, 0.0, None);
+                    });
+                });
+                raster.update_textures(&output.textures_delta);
+                raster.buf.fill([0.0; 4]);
+                raster.draw(&ctx.tessellate(output.shapes, 1.0), 1.0);
+                let pixels: Vec<u8> = raster.buf.iter().map(|p| (p[0] * 255.0).round() as u8).collect();
+                let changed = |old: &[u8], contrast: u8| old.iter().zip(&pixels)
+                    .filter(|(a,b)| a.abs_diff(**b) >= contrast).count();
+                if changed(&previous, 2) >= 6 { moving += 1; }
+                if frame % 15 == 0 {
+                    strongest = strongest.max(changed(&quarter, 64));
+                    quarter.clone_from(&pixels);
+                }
+                if frame % 60 == 59 {
+                    assert!(moving >= 56 && strongest >= 28,
+                        "{pose:?}, second {}: {moving} moving frames, {strongest} visibly displaced pixels", frame / 60);
+                    moving = 0;
+                    strongest = 0;
+                }
+                previous = pixels;
+                raster.free_textures(&output.textures_delta);
+            }
+            segment_start += MUSIC_PERIOD + expression.duration();
+        }
     }
     #[test]
     #[ignore="按需导出听歌状态的实际界面动图"]
@@ -209,11 +258,16 @@ mod tests {
             }
             start+=MUSIC_PERIOD+expression.duration();
         }
+        let (fps, frames) = if std::env::var_os("DAOZAI_SINGING_PHRASE").is_some() {
+            scenes.truncate(1);
+            scenes[0].1 += 2.0;
+            (60.0, 308)
+        } else { (10.0, 32) };
         let mut raster=crate::preview_raster::Raster::new(1280,540);let mut sequence=0;
         for (index,(_,at)) in scenes.iter().enumerate() {
             app.pet.music_age=*at;
-            for frame in 0..32 {
-                let t=sequence as f64/10.0;sequence+=1;
+            for frame in 0..frames {
+                let t=sequence as f64/fps;sequence+=1;
                 let env=Env{t,clock:"09:41:00".into(),today:"2026-11-07".into(),date:"11月7日 周六".into(),idle_seconds:Some(0.0),
                     media:crate::smtc::NowPlaying{title:"晚风与星光".into(),artist:"示例歌手".into(),playing:true,duration:240.0,..Default::default()},..Default::default()};
                 let input=egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,Vec2::new(WIN_W,WIN_H))),time:Some(t),
@@ -257,17 +311,42 @@ fn music_segment_at(age:f32)->MusicSegment {
     MusicSegment{pose:MusicPose::Microphone,elapsed:0.0,expression:None}
 }
 
-fn microphone_pose(age:f32)->([f32;2],f32) {
-    ([5.9+(age*0.95).sin()*0.2,20.8+(age*1.35).sin()*0.45],35.0_f32.to_radians()+(age*1.1).sin()*0.07)
+// 一口气唱四拍。嘴形在每拍内改变，头随重拍摆动，麦克风在换气时略微放低。
+#[derive(Clone, Copy)]
+struct SingingMotion {
+    beat: f32,
+    sway: f32,
+    vowel: f32,
+    breath: f32,
+}
+
+impl SingingMotion {
+    fn at(elapsed: f32, animate: bool) -> Self {
+        if !animate { return Self { beat: 0.0, sway: 0.0, vowel: 0.45, breath: 0.0 }; }
+        let beats = elapsed / 0.64;
+        let phase = beats * std::f32::consts::TAU;
+        let breath = gesture(beats % 4.0, 3.12, 3.65, 4.0);
+        let syllable = 0.5 - 0.5 * (phase + 0.65 * (phase * 0.5).sin()).cos();
+        Self {
+            beat: phase.sin(), sway: (phase * 0.25).sin(),
+            vowel: syllable * (1.0 - breath), breath,
+        }
+    }
+
+    fn microphone(self) -> ([f32; 2], f32) {
+        let head = [5.7 + 1.15 * self.breath - 0.45 * self.vowel,
+                    20.7 + 1.6 * self.breath - 0.65 * self.vowel];
+        let angle = 0.46 + 0.20 * self.beat + 0.17 * self.breath;
+        (head, angle)
+    }
 }
 
 fn gesture(age: f32, start: f32, peak: f32, end: f32) -> f32 {
     smoothstep(start, peak, age) * (1.0 - smoothstep(peak, end, age))
 }
 
-fn microphone(c:&Card,cx:f32,y:f32,age:f32){
-    let age=if crate::bar_layout::animations_enabled(){age}else{0.0};
-    let (head,angle)=microphone_pose(age);
+fn microphone(c:&Card,cx:f32,y:f32,movement:SingingMotion){
+    let (head,angle)=movement.microphone();
     let point=|s:f32,v:f32|(cx+head[0]+s*angle.cos()-v*angle.sin(),y+head[1]+s*angle.sin()+v*angle.cos());
     let capsule=|start:f32,end:f32,width:f32,color:Color32|{
         let a=point(start,0.0);let b=point(end,0.0);
@@ -359,7 +438,8 @@ impl Pet {
             }
         }
     }
-    pub fn music_pose(&self)->MusicPose {
+    #[cfg(test)]
+    fn music_pose(&self)->MusicPose {
         music_segment_at(self.music_age).pose
     }
 
@@ -380,20 +460,22 @@ impl Pet {
         let state = self.state;
         let age = self.age;
         let mut eyes = [Eye::open(4.4); 2];
-        let mut y = if motion { (age * 1.7).sin() * 0.35 } else { 0.0 };
+        let breath = if motion { (age * 1.9).sin() } else { 0.0 };
+        let mut y = breath * 0.8;
         let mut look = gaze;
+        let mut eye_dt = dt;
         match state {
             PetState::Awake if motion => {
                 let phase = age % 24.0;
                 let lean = gesture(phase, 3.0, 3.8, 5.1) - gesture(phase, 15.0, 15.8, 17.1);
                 eyes[0].y = lean * 1.25;
                 eyes[1].y = -eyes[0].y;
-                for eye in &mut eyes { eye.spread = lean * 0.4; }
+                for eye in &mut eyes { eye.spread = lean * 0.4; eye.height += breath * 0.5; }
             },
             PetState::Awake => {},
             PetState::Curious => {
-                eyes[0].height = 5.6; eyes[1].height = 6.3;
-                eyes[0].y = 0.6; eyes[1].y = -0.6;
+                eyes[0].height = 5.6 + breath * 0.6; eyes[1].height = 6.3 - breath * 0.6;
+                eyes[0].y = 0.6 + breath * 0.55; eyes[1].y = -eyes[0].y;
             },
             PetState::Waking => {
                 let wake = if motion { age } else { 2.2 };
@@ -405,47 +487,67 @@ impl Pet {
             },
             PetState::Happy => {
                 eyes = [Eye::arc(2.6, -1.8); 2];
-                y = -(age * 7.5).sin().abs() * 2.0 * (-age * 0.65).exp();
+                y = if motion { -(age * 7.5).sin().abs() * 2.0 * (-age * 0.65).exp() } else { 0.0 };
             },
             PetState::Satisfied => {
                 eyes = [Eye::arc(2.2, -1.2); 2];
-                y = (age * 8.0).sin() * 1.2 * (-age * 0.8).exp();
+                y = if motion { (age * 8.0).sin() * 1.2 * (-age * 0.8).exp() } else { 0.0 };
             },
             PetState::Music => {
-                let age=self.music_age;
-                let sway=(age*1.4).sin();
-                look=[0.0,0.0];y=-0.5+sway*0.25;
-                match self.music_pose() {
-                    MusicPose::Microphone=>{eyes=[Eye::arc(2.5,0.7);2];},
-                    MusicPose::SideSing=>{eyes=[Eye::open(1.6);2];eyes[0].y=-0.5;eyes[1].y=0.5;look=[0.4,0.0];y=sway*0.35;},
-                    MusicPose::HighNote=>{eyes=[Eye::arc(2.3,-0.7);2];eyes[0].tilt=-0.3;eyes[1].tilt=0.3;y=-1.5+sway*0.2;},
-                    MusicPose::Hum=>{eyes=[Eye::arc(2.5,0.7);2];y=sway*0.3;},
-                    MusicPose::Squint=>{eyes=[Eye::arc(1.6,0.0);2];y=sway*0.45;},
-                    MusicPose::Smile=>{eyes=[Eye::arc(2.3,-0.8);2];eyes[0].y=-0.5;eyes[1].y=0.5;look=[sway*0.5,0.0];},
+                let segment = music_segment_at(self.music_age);
+                let m = SingingMotion::at(segment.elapsed, motion);
+                eye_dt *= lerp(0.2, 1.0, smoothstep(0.0, 1.0, segment.elapsed));
+                look = [m.sway * 1.55, 0.0];
+                y = -0.45 + m.beat * 1.35 + m.breath * 0.55;
+                let mut tilt = m.sway * 0.75;
+                let eye = match segment.pose {
+                    MusicPose::Microphone => Eye::arc(2.5 - 0.45 * m.vowel, 0.5 + 1.45 * m.vowel),
+                    MusicPose::SideSing => {
+                        look[0] = 0.6 + m.sway;
+                        tilt += 0.65;
+                        Eye::open(1.0 + m.vowel * 1.9)
+                    },
+                    MusicPose::HighNote => {
+                        y -= 1.25 * m.vowel;
+                        Eye::arc(2.5, -0.45 - m.vowel * 1.55)
+                    },
+                    MusicPose::Hum => Eye::arc(2.65, 0.3 + m.vowel),
+                    MusicPose::Squint => Eye::arc(1.55 + m.vowel * 0.85, m.vowel * 0.55),
+                    MusicPose::Smile => {
+                        tilt += 0.4;
+                        Eye::arc(2.45, -0.5 - m.vowel * 1.3)
+                    },
+                };
+                eyes = [eye; 2];
+                for (eye, sign) in eyes.iter_mut().zip([-1.0, 1.0]) {
+                    eye.y = tilt * sign;
+                    eye.tilt = tilt * 0.36;
                 }
             },
             PetState::Worried => {
                 eyes[0] = Eye { spread: -0.6, tilt: -0.7, y: 0.4, ..Eye::open(2.8) };
                 eyes[1] = Eye { spread: 0.6, tilt: 0.7, y: 1.0, ..Eye::open(1.8) };
+                eyes[1].height += breath * 0.8;
             },
             PetState::Focused => {
                 let phase = age % 17.0;
                 let nod = if motion { gesture(phase, 4.0, 4.55, 5.5) } else { 0.0 };
                 eyes = [Eye::open(1.8 - nod * 0.9); 2];
                 look = [gaze[0] * 0.2, 0.0];
-                y = nod * 1.7;
+                y = nod * 1.7 + breath * 0.7;
+                look[0] += if motion { (age * 1.1).sin() * 1.3 } else { 0.0 };
             },
             PetState::Dozing => {
                 let phase = age % 9.5;
                 let droop = if motion { gesture(phase, 1.0, 3.1, 3.9) } else { 0.0 };
                 eyes = [Eye::open(0.6 * (1.0 - droop)); 2];
                 eyes[1].y = droop * 0.8;
-                y = 1.0 + droop * 1.4;
+                y = 1.0 + droop * 1.4 + breath * 0.65;
                 look = [0.0; 2];
             },
             PetState::Sleeping => {
                 eyes = [Eye::arc(2.4, 1.0); 2];
-                y = 0.8 + if motion { (age * 1.2).sin() * 0.4 } else { 0.0 };
+                y = 0.8 + if motion { (age * 1.2).sin() * 1.05 } else { 0.0 };
                 look = [0.0; 2];
             },
         }
@@ -457,7 +559,6 @@ impl Pet {
                 for eye in &mut eyes { eye.height *= 1.0 - (blink * std::f32::consts::PI).sin(); }
             }
         }
-        let eye_dt=if state==PetState::Music {dt*0.2}else{dt};
         for (eye, goal) in self.eyes.iter_mut().zip(eyes) { eye.follow(goal, eye_dt); }
         for (axis, goal) in self.gaze.iter_mut().zip(look) { *axis = approach(*axis, goal, 10.0, dt); }
         self.y = approach(self.y, y, 14.0, dt);
@@ -498,7 +599,8 @@ impl Pet {
             PetState::Satisfied => crate::paint::droplet(c,cx+18.0,12.0,5.0,theme::CYAN),
             PetState::Music => {
                 let segment=music_segment_at(self.music_age);
-                self.draw_music(&c.faded(smoothstep(0.0,1.0,segment.elapsed)),cx,segment.pose);
+                let movement = SingingMotion::at(segment.elapsed, crate::bar_layout::animations_enabled());
+                self.draw_music(&c.faded(smoothstep(0.0,1.0,segment.elapsed)), cx, segment.pose, movement);
             },
             PetState::Worried => {
                 c.fill(cx+17.0,8.0,1.6,4.2,0.8,theme::YELLOW);
@@ -508,28 +610,41 @@ impl Pet {
         }
     }
 
-    fn draw_music(&self,c:&Card,cx:f32,pose:MusicPose){
-        let y=self.y+self.gaze[1];
-        let pulse=(self.music_age*2.0).sin()*0.5+0.5;
-        let mouth=|rx:f32,ry:f32|{
-            let points:Vec<_>=(0..=24).map(|n|{let angle=n as f32/24.0*std::f32::consts::TAU;(cx-0.8+angle.cos()*rx,20.7+y+angle.sin()*ry)}).collect();
-            c.path(&points,0.9,theme::WHITE);
+    fn draw_music(&self, c: &Card, cx: f32, pose: MusicPose, m: SingingMotion) {
+        let face_x = cx + self.gaze[0];
+        let y = self.y + self.gaze[1];
+        let mouth_x = face_x - 1.15;
+        let mouth_y = 20.3 + y + 0.6 * m.vowel;
+        let mouth = |rx: f32, ry: f32| {
+            let points = std::array::from_fn::<_, 25, _>(|i| {
+                let (sin, cos) = (i as f32 / 24.0 * std::f32::consts::TAU).sin_cos();
+                (mouth_x + cos * rx, mouth_y + sin * ry)
+            });
+            c.path(&points, 1.0, theme::WHITE);
         };
         match pose {
-            MusicPose::Microphone=>mouth(1.1,0.8+pulse*0.5),
-            MusicPose::SideSing=>mouth(1.5,0.8+pulse*0.3),
-            MusicPose::HighNote=>mouth(1.7,1.6+pulse*0.5),
-            MusicPose::Hum=>c.path(&[(cx-2.7,20.7+y),(cx-1.8,21.4+y),(cx-0.8,21.0+y),(cx+0.2,21.4+y),(cx+1.1,20.7+y)],0.9,theme::WHITE),
-            MusicPose::Squint=>mouth(1.2,0.4+pulse*0.6),
-            MusicPose::Smile=>c.path(&[(cx-2.5,20.6+y),(cx-1.6,21.6+y),(cx-0.5,21.9+y),(cx+0.6,21.6+y),(cx+1.5,20.6+y)],1.0,theme::WHITE),
+            MusicPose::Microphone => mouth(2.05 - 0.75 * m.vowel, 0.23 + 1.7 * m.vowel),
+            MusicPose::SideSing => mouth(2.15 - 0.55 * m.vowel, 0.3 + 1.55 * m.vowel),
+            MusicPose::HighNote => mouth(1.6 + 0.35 * m.vowel, 0.9 + 1.5 * m.vowel),
+            MusicPose::Squint => mouth(1.75 - 0.45 * m.vowel, 0.23 + 1.65 * m.vowel),
+            MusicPose::Hum | MusicPose::Smile => {
+                let width = 2.25 + 0.4 * m.vowel;
+                let depth = 0.55 + 1.3 * m.vowel;
+                let center = if pose == MusicPose::Hum { depth * 0.25 } else { depth * 1.25 };
+                c.path(&[(mouth_x-width, mouth_y), (mouth_x-width*0.5, mouth_y+depth),
+                         (mouth_x, mouth_y+center), (mouth_x+width*0.5, mouth_y+depth),
+                         (mouth_x+width, mouth_y)], 1.0, theme::WHITE);
+            },
         }
         if matches!(pose,MusicPose::Microphone|MusicPose::SideSing|MusicPose::HighNote) {
-            microphone(c,cx,y,self.music_age);
+            microphone(c, face_x, y, m);
         } else {
-            let y=8.5+(self.music_age*1.4).sin()*0.6;
-            c.seg((cx+16.0,y-3.0),(cx+16.0,y+3.0),1.1,theme::WHITE);
-            c.seg((cx+16.0,y-3.0),(cx+19.0,y-2.0),1.1,theme::WHITE);
-            c.circle(cx+14.8,y+3.0,1.5,theme::WHITE);
+            let x = cx + 13.2 + 1.0 * m.sway;
+            let y = 8.5 - 1.85 * m.beat;
+            let tilt = m.sway * 0.95;
+            c.seg((x+tilt, y-2.8), (x, y+2.8), 1.1, theme::WHITE);
+            c.seg((x+tilt, y-2.8), (x+tilt+2.4, y-1.8), 1.1, theme::WHITE);
+            c.circle(x-1.15, y+2.8, 1.45, theme::WHITE);
         }
     }
 }

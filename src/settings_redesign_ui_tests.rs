@@ -26,15 +26,108 @@ fn peripheral_preferences_upgrade_and_roundtrip(){
     std::fs::write(dir.join("settings.txt"),"visible_pages=1011111110\npage_order=9,8,7,6,5,4,3,2,1,0\nbluetooth_notifications=0\n").unwrap();
     let mut settings=crate::model::Settings::load();
     assert!(settings.peripheral_pin.is_empty() && settings.peripheral_low_alert);
+    assert!(settings.peripheral_auto);
+    assert_eq!((settings.peripheral_warn_at,settings.peripheral_auto_at),(20,20));
     assert_eq!(settings.page_order,[9,8,7,6,5,4,3,2,1,0,10]);
     assert!(settings.visible_pages[crate::app::PERIPHERALS_PAGE]);
     assert!(!settings.visible_pages[crate::app::RECORDER_PAGE] && !settings.bluetooth_notifications);
     settings.peripheral_pin="rog:1ace:07:test".into();
     settings.peripheral_low_alert=false;
+    settings.peripheral_warn_at=37;
+    settings.peripheral_auto=false;
+    settings.peripheral_auto_at=10;
     settings.save();
     let saved=crate::model::Settings::load();
     assert_eq!(saved.peripheral_pin,settings.peripheral_pin);
-    assert!(!saved.peripheral_low_alert);
+    assert!(!saved.peripheral_low_alert && !saved.peripheral_auto);
+    assert_eq!((saved.peripheral_warn_at,saved.peripheral_auto_at),(37,10));
+
+    let path=dir.join("settings.txt");
+    std::fs::write(&path,"peripheral_low_alert=0\n").unwrap();
+    let upgraded=crate::model::Settings::load();
+    assert!(!upgraded.peripheral_low_alert && upgraded.peripheral_auto);
+    assert_eq!((upgraded.peripheral_warn_at,upgraded.peripheral_auto_at),(20,20));
+    for (input,expected) in [("0",1),("1",1),("100",100),("999",100),("abc",20)] {
+        std::fs::write(&path,format!("peripheral_warn_at={input}\nperipheral_auto_at={input}\n")).unwrap();
+        let loaded=crate::model::Settings::load();
+        assert_eq!((loaded.peripheral_warn_at,loaded.peripheral_auto_at),(expected,expected));
+    }
+}
+
+#[test]
+fn peripheral_threshold_controls_are_independent_and_persist() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h = H::new();
+    h.app.sync_bluetooth_power(&crate::bt::Snapshot {
+        devices: vec![crate::bt::Device {
+            id: "test".into(), name: "鼠标".into(), kind: crate::bt::DeviceKind::Mouse, battery: Some(80),
+        }],
+        ..Default::default()
+    });
+    h.app.settings.peripheral_pin = "bt-test".into();
+    h.app.peripherals.sync_selection(&mut h.app.settings);
+    assert!(h.app.settings.peripheral_identity.is_some());
+    h.app.open_settings();
+    h.app.settings_tab = crate::extras::SETTINGS_TAB_PERIPHERALS;
+    h.ctx.set_embed_viewports(true);
+    fn draw(h: &mut H, events: Vec<egui::Event>) {
+        h.t += 1.0 / 60.0;
+        let raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(600.0, 450.0))),
+            time: Some(h.t), events, ..Default::default()
+        };
+        h.shapes = h.ctx.run(raw, |ctx| h.app.settings_ui(ctx, false)).shapes;
+    }
+    fn click(h: &mut H, pos: Pos2) {
+        draw(h, vec![egui::Event::PointerMoved(pos)]);
+        for pressed in [true, false] {
+            draw(h, vec![egui::Event::PointerMoved(pos), egui::Event::PointerButton {
+                pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default()
+            }]);
+        }
+    }
+    for _ in 0..3 { draw(&mut h, vec![]); }
+    let mut decreases = Vec::new();
+    let mut switches = Vec::new();
+    let mut automatic = None;
+    for shape in &h.shapes {
+        let rect = match &shape.shape {
+            egui::Shape::Text(t) if t.galley.text() == "−" => t.visual_bounding_rect(),
+            egui::Shape::Text(t) if t.galley.text() == "切回自动上岛" => t.visual_bounding_rect(),
+            egui::Shape::Rect(r) if r.rect.size() == egui::vec2(34.0, 20.0) => r.rect,
+            _ => continue,
+        };
+        assert!(shape.clip_rect.contains(rect.center()));
+        match &shape.shape {
+            egui::Shape::Text(t) if t.galley.text() == "−" => decreases.push(rect.center()),
+            egui::Shape::Text(_) => automatic = Some(rect.center()),
+            _ => switches.push(rect.center()),
+        }
+    }
+    assert_eq!(decreases.len(), 2);
+    assert_eq!(switches.len(), 2);
+    decreases.sort_by(|a,b| a.y.total_cmp(&b.y));
+    switches.sort_by(|a,b| a.y.total_cmp(&b.y));
+    let automatic = automatic.expect("手动常驻时应有切回自动上岛的入口");
+    click(&mut h, switches[1]);
+    click(&mut h, automatic);
+    click(&mut h, decreases[1]);
+    assert_eq!(h.app.settings.peripheral_auto_at, 20);
+    assert!(!h.app.settings.peripheral_auto && h.app.settings.peripheral_low_alert);
+    assert!(!h.app.settings.peripheral_pin.is_empty());
+    click(&mut h, switches[1]);
+    assert!(h.app.settings.peripheral_auto, "应能重新开启自动上岛");
+    click(&mut h, switches[0]);
+    assert!(!h.app.settings.peripheral_low_alert, "应能单独关闭提醒");
+    click(&mut h, decreases[0]);
+    for _ in 0..10 { click(&mut h, decreases[1]); }
+    assert!(!h.app.settings.peripheral_low_alert && h.app.settings.peripheral_auto);
+    click(&mut h, switches[0]);
+    click(&mut h, automatic);
+    let saved = crate::model::Settings::load();
+    assert!(saved.peripheral_pin.is_empty() && saved.peripheral_identity.is_none());
+    assert!(saved.peripheral_low_alert && saved.peripheral_auto);
+    assert_eq!((saved.peripheral_warn_at,saved.peripheral_auto_at),(20,10));
 }
 
 /// 旧版「新邮件提醒」关着的用户：升级后邮箱模块关闭，内部开关恢复为开，不会突然开始收信。

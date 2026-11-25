@@ -657,7 +657,7 @@ impl eframe::App for Shell {
                     i.events.iter().any(|e|!matches!(e,egui::Event::Screenshot{..})),
                 ));
                 let changed=shot.as_ref().is_some_and(|image|native.present_frame(image.size,image.as_raw()));
-                let moving=!self.hidden && out.interactive_transition;
+                let moving=!self.hidden && (out.interactive_transition || out.mascot_motion);
                 let previous=std::mem::replace(&mut self.was_interactive_transition,moving);
                 let capture_transition=moving || (previous && !self.hidden);
                 let interactive=other_input || capture_transition;

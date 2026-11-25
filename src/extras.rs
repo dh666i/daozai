@@ -1539,9 +1539,25 @@ impl App {
                     match tab {
                     SETTINGS_TAB_PERIPHERALS=>{
                         let on=self.settings_feature_header(ui,crate::app::PERIPHERALS_PAGE,"鼠标、键盘与耳机",|_,_|{});
-                        settings_label(ui,"提醒");
+                        settings_label(ui,"低电量");
                         ui.add_enabled_ui(on,|ui|settings_card(ui,|ui|{
-                            setting_row(ui,"低电量提醒","每次进入低电量状态时提醒一次",&mut self.settings.peripheral_low_alert);
+                            setting_row(ui,"低电量提醒","电量降至设定值或更低时提醒一次",&mut self.settings.peripheral_low_alert);
+                            ui.add_enabled_ui(self.settings.peripheral_low_alert,|ui|{
+                                setting_number(ui,"提醒电量",&mut self.settings.peripheral_warn_at,1,100,"%",1.0);
+                            });
+                            ui.separator();
+                            setting_row(ui,"低电量自动上岛","电量降至设定值或更低时常驻显示，充电或电量恢复后收起",&mut self.settings.peripheral_auto);
+                            ui.add_enabled_ui(self.settings.peripheral_auto,|ui|{
+                                setting_number(ui,"上岛电量",&mut self.settings.peripheral_auto_at,1,100,"%",1.0);
+                            });
+                            if !self.settings.peripheral_pin.is_empty() {
+                                settings_control_row_right(ui,"手动常驻优先",|ui|{
+                                    if ui.add_enabled(self.settings.peripheral_auto,egui::Button::new("切回自动上岛")).clicked() {
+                                        self.settings.peripheral_pin.clear();
+                                        self.peripherals.sync_selection(&mut self.settings);
+                                    }
+                                });
+                            }
                         }));
                         settings_label(ui,"设备读数");
                         settings_card(ui,|ui|{
@@ -2345,7 +2361,10 @@ impl App {
                 });
             });
             self.avoidance.dialog(ctx,&mut self.settings);
-            if before!=format!("{:?}",self.settings){self.settings.save();}
+            if before!=format!("{:?}",self.settings){
+                self.settings.save();
+                if self.settings_tab==SETTINGS_TAB_PERIPHERALS{ctx.request_repaint_of(egui::ViewportId::ROOT);}
+            }
             ctx.set_style(original_style);
         });
         if !self.settings_open{self.window_layout().close();self.weather_source.close();}else{self.weather_tutorial_ui(ctx);}

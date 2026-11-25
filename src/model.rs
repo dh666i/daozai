@@ -230,6 +230,9 @@ pub struct Settings {
     pub peripheral_pin: String,
     pub(crate) peripheral_identity: Option<crate::peripherals::Device>,
     pub peripheral_low_alert: bool,
+    pub peripheral_warn_at: u8,
+    pub peripheral_auto: bool,
+    pub peripheral_auto_at: u8,
     pub read_notifications:bool,
     pub wechat_notifications:bool,
     pub wecom_notifications:bool,
@@ -294,7 +297,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-Self { display_id: String::new(), skin: Skin::Classic, island_shape: IslandShape::Notch, glass_blur: true, island_size: 100, island_offset: 0, oled_shift: false, dock: Dock::Top, settings_theme: Default::default(), pet: true, minimal: false, browser_minimal: false, avoid_browsers: true, avoid_apps: Vec::new(), visible_pages: [true; crate::app::PAGE_COUNT], page_order: std::array::from_fn(|i| i), show_clock: true, show_battery: true, show_weather: true, clock_12h: false, clock_period: 0, clock_seconds: false, resident_order: Vec::new(), system_hud: true, bluetooth_notifications: true, peripheral_pin: String::new(), peripheral_identity: None, peripheral_low_alert: true, read_notifications:false, wechat_notifications:false, wecom_notifications:false, feishu_notifications:false, dingtalk_notifications:false, wechat_tray_open:false, qq_only:false, notification_preview:false, notifications: true, system_notify: true, sound: false, lyrics_enabled:true, island_lyrics:false, lyric_delay_ms:-350, hide_fullscreen: true, avoid_top_bar: true, top_bar_on_top: false, focus_minutes: 25, rest_minutes: 5, water_minutes: 45, serving_ml: 250, water_start: 9, water_end: 22, sit_remind: true, sit_minutes: 60, lunch_rest: true, lunch_start: 720, lunch_end: 810, mail_enabled: true, mail_sync_operations:false, mail_code: true, mail_code_hide_seconds:60, mail_interval: 120, mail_ics: 15, ignored_mail_events: Vec::new(), calendar_prompt: true, calendar_auto_sync: true, clipboard_history: true, record_system_audio: true, record_microphone: false, weather_city: String::new(), weather_position: None, weather_saved: Vec::new(), render_compat: false, render_compat_reason: String::new() }
+Self { display_id: String::new(), skin: Skin::Classic, island_shape: IslandShape::Notch, glass_blur: true, island_size: 100, island_offset: 0, oled_shift: false, dock: Dock::Top, settings_theme: Default::default(), pet: true, minimal: false, browser_minimal: false, avoid_browsers: true, avoid_apps: Vec::new(), visible_pages: [true; crate::app::PAGE_COUNT], page_order: std::array::from_fn(|i| i), show_clock: true, show_battery: true, show_weather: true, clock_12h: false, clock_period: 0, clock_seconds: false, resident_order: Vec::new(), system_hud: true, bluetooth_notifications: true, peripheral_pin: String::new(), peripheral_identity: None, peripheral_low_alert: true, peripheral_warn_at: 20, peripheral_auto: true, peripheral_auto_at: 20, read_notifications:false, wechat_notifications:false, wecom_notifications:false, feishu_notifications:false, dingtalk_notifications:false, wechat_tray_open:false, qq_only:false, notification_preview:false, notifications: true, system_notify: true, sound: false, lyrics_enabled:true, island_lyrics:false, lyric_delay_ms:-350, hide_fullscreen: true, avoid_top_bar: true, top_bar_on_top: false, focus_minutes: 25, rest_minutes: 5, water_minutes: 45, serving_ml: 250, water_start: 9, water_end: 22, sit_remind: true, sit_minutes: 60, lunch_rest: true, lunch_start: 720, lunch_end: 810, mail_enabled: true, mail_sync_operations:false, mail_code: true, mail_code_hide_seconds:60, mail_interval: 120, mail_ics: 15, ignored_mail_events: Vec::new(), calendar_prompt: true, calendar_auto_sync: true, clipboard_history: true, record_system_audio: true, record_microphone: false, weather_city: String::new(), weather_position: None, weather_saved: Vec::new(), render_compat: false, render_compat_reason: String::new() }
     }
 }
 
@@ -384,6 +387,9 @@ impl Settings {
                 "peripheral_pin" => s.peripheral_pin = v.to_owned(),
                 "peripheral_identity" => s.peripheral_identity = serde_json::from_str(&v).unwrap_or_default(),
                 "peripheral_low_alert" => s.peripheral_low_alert = v != "0",
+                "peripheral_warn_at" => s.peripheral_warn_at = v.parse::<i32>().unwrap_or(20).clamp(1, 100) as u8,
+                "peripheral_auto" => s.peripheral_auto = v != "0",
+                "peripheral_auto_at" => s.peripheral_auto_at = v.parse::<i32>().unwrap_or(20).clamp(1, 100) as u8,
                 "notifications" => s.notifications = v != "0",
                 "system_notify" => s.system_notify = v != "0",
                 "sound" => s.sound = v == "1",
@@ -473,6 +479,9 @@ impl Settings {
                 ("peripheral_pin".into(), self.peripheral_pin.clone()),
                 ("peripheral_identity".into(), serde_json::to_string(&self.peripheral_identity).unwrap()),
                 ("peripheral_low_alert".into(), (self.peripheral_low_alert as u8).to_string()),
+                ("peripheral_warn_at".into(), self.peripheral_warn_at.to_string()),
+                ("peripheral_auto".into(), (self.peripheral_auto as u8).to_string()),
+                ("peripheral_auto_at".into(), self.peripheral_auto_at.to_string()),
                 ("notifications".into(), (self.notifications as u8).to_string()),
                 ("system_notify".into(), (self.system_notify as u8).to_string()),
                 ("sound".into(), (self.sound as u8).to_string()),

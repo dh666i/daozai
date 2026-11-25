@@ -443,6 +443,8 @@ pub struct FrameOut {
     pub animating: bool,
     /// 展开、收起、翻页或内容滚动仍需逐帧交付。
     pub interactive_transition: bool,
+    /// Visible mascot animation needs a new captured frame even when no input moves.
+    pub mascot_motion: bool,
     pub repaint_after: std::time::Duration,
     pub cmds: Vec<Cmd>,
 }
@@ -2282,15 +2284,16 @@ impl App {
             || self.notice.as_ref().is_some_and(|a|a.source!=crate::extras::AlertSource::Internal&&self.t-a.at<0.95)
             || self.hud_alpha > 0.003 && self.hud_alpha < 0.997
             || !self.notice_width.settled(1.0);
-        let pet_visible=self.pet_a>0.01 && !self.open && !minimal_pill;
+        let mascot_motion = pet_alpha > 0.01 && !minimal_pill && !self.fullscreen_hidden
+            && !env.screen_locked && bar::animations_enabled();
         let ambient=self.settings.skin==model::Skin::Fluid && self.fluid.animating() || self.pomo.running && (self.open && self.page==1 || !self.open && !minimal_pill && self.notice.is_none() && bar::animations_enabled())
             || self.media.playing && (self.open && self.page==0 || !self.open && !minimal_pill && self.notice.is_none() && self.media.is_music())
             || self.notice.as_ref().is_some_and(|notice|notice.meeting.is_some());
         let power_motion = !self.fullscreen_hidden && crate::peripherals::ui::needs_frame(&ctx);
-        let animating=transitioning || ambient || power_motion || pet_visible && self.pet.state!=PetState::Sleeping;
-        let repaint_after=std::time::Duration::from_secs_f64(if transitioning || power_motion || pet_visible && self.pet.state!=PetState::Sleeping {
+        let animating=transitioning || ambient || power_motion || mascot_motion;
+        let repaint_after=std::time::Duration::from_secs_f64(if transitioning || power_motion || mascot_motion {
             1.0/60.0
-        } else if ambient {1.0/30.0} else if pet_visible {0.1} else {1.0});
+        } else if ambient {1.0/30.0} else {1.0});
         cmds.append(&mut self.pending);
         let next_hit=if side {self.side_hit_rect(win,self.progress())} else {self.hit_rect(cx,top,self.progress())};
         if page_before!=self.page && self.open {
@@ -2320,6 +2323,7 @@ impl App {
             editing: self.is_editing(),
             animating,
             interactive_transition: interactive_transition || power_motion,
+            mascot_motion,
             repaint_after,
             cmds,
         }
@@ -3059,7 +3063,7 @@ impl App {
 
     pub(crate) fn draw_island_power(&mut self, c: &Card, cx: f32, cy: f32) {
         let Some(device) = self.pinned_peripheral() else { return; };
-        crate::peripherals::ui::draw_compact(c, cx, cy, device);
+        self.peripherals.draw_compact(c, cx, cy, device);
         if c.painter.opacity() < 0.8 { return; }
         let width = crate::peripherals::ui::COMPACT_WIDTH;
         if c.hit(cx-width/2.0, cy-14.0, width, 28.0, "open-peripheral-badge").clicked() {
